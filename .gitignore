@@ -1,0 +1,23 @@
+# Device and local credentials
+secrets.py
+**/secrets.py
+
+# Laptop-specific badge names and local IP addresses
+laptop/badge_profiles.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Test and tool output
+.pytest_cache/
+htmlcov/
+*.log
