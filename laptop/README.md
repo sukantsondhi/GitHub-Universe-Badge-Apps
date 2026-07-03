@@ -44,8 +44,10 @@ the same symbol language for fast visual selection.
 
 The controller sizes itself to the current display. Select **Full Screen** or
 press **F11** for a borderless responsive view; press **Escape** to leave it.
-In full screen, the layout now adapts for narrow, wide, and short displays so
-all Quick Signal statuses remain visible.
+In full screen, the layout adapts for narrow, wide, and short displays so all
+Quick Signal statuses remain visible, including the connection, battery, active
+signal and live preview header telemetry. Use **Show Custom** / **Hide Custom**
+to open or close the custom signal panel when needed.
 Select **Desktop Widget** (or press **Ctrl+Shift+W**) for a compact,
 always-on-top status controller. **Open Dashboard** restores the full window.
 

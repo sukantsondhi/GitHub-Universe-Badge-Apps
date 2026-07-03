@@ -562,9 +562,10 @@ class WorkStatusController:
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         self.root.geometry(fitted_window_geometry(screen_width, screen_height))
-        min_width = min(screen_width, max(480, screen_width - 120))
-        min_height = min(screen_height, max(360, screen_height - 140))
-        self.root.minsize(min_width, min_height)
+        self.root.minsize(
+            min(820, max(640, screen_width - 80)),
+            min(620, max(500, screen_height - 96)),
+        )
         self.root.configure(bg="#eaf2f8")
 
         config = load_config()
@@ -611,6 +612,8 @@ class WorkStatusController:
         self.status_grid: tk.Frame | None = None
         self.status_tiles: dict[str, tk.Frame] = {}
         self._status_columns = 0
+        self.custom_panel_visible = False
+        self.custom_toggle_button: tk.Button | None = None
         self.pairing_active = False
         self.result_queue: queue.Queue[tuple[str, object, str]] = queue.Queue()
         self.status_buttons: dict[str, tk.Button] = {}
@@ -1019,6 +1022,25 @@ class WorkStatusController:
             style="Dark.TEntry",
             font=("Segoe UI", 11),
         ).pack(fill="x", padx=16, pady=(7, 9))
+        quick_actions = tk.Frame(status_card, bg=panel)
+        quick_actions.pack(fill="x", padx=16, pady=(0, 7))
+        self.custom_toggle_button = tk.Button(
+            quick_actions,
+            text="SHOW CUSTOM",
+            command=self.toggle_custom_panel,
+            bg=panel_raised,
+            fg=violet,
+            activebackground=palette["active"],
+            activeforeground=text,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=border,
+            font=("Segoe UI Semibold", 9),
+            cursor="hand2",
+            padx=12,
+        )
+        self.custom_toggle_button.pack(side="right", ipady=4)
 
         grid = tk.Frame(status_card, bg=panel)
         grid.pack(fill="both", expand=True, padx=11, pady=(0, 11))
@@ -1211,6 +1233,7 @@ class WorkStatusController:
         )
         self.custom_send_button.pack(fill="x", pady=(9, 0), ipady=6)
         self._update_custom_preview()
+        self.custom_shell.grid_remove()
 
         # Persistent system log.
         self.activity_shell, activity = card(self.root)
@@ -2508,6 +2531,18 @@ class WorkStatusController:
             grid.rowconfigure(row, weight=1 if row < rows else 0)
         self._status_columns = columns
 
+    def toggle_custom_panel(self) -> None:
+        self.custom_panel_visible = not self.custom_panel_visible
+        if self.custom_toggle_button is not None:
+            self.custom_toggle_button.configure(
+                text=(
+                    "HIDE CUSTOM"
+                    if self.custom_panel_visible
+                    else "SHOW CUSTOM"
+                ),
+            )
+        self.root.after_idle(self._apply_responsive_layout)
+
     def _on_root_configure(self, event) -> None:
         if event.widget is not self.root:
             return
@@ -2526,10 +2561,11 @@ class WorkStatusController:
         height = self.root.winfo_height()
         compact = height < 780
         narrow = width < 1050
-        wide_header = width >= 1000 and not compact
+        show_header_telemetry = width >= 760
+        show_preview = width >= 940
         outer_pad = 14 if width < 1000 else 22
 
-        self.hero.configure(height=116 if compact else 154)
+        self.hero.configure(height=132 if compact else 154)
         self.hero.pack_configure(
             padx=outer_pad,
             pady=(6, 5) if compact else (12, 8),
@@ -2547,45 +2583,62 @@ class WorkStatusController:
             self.status_shell is not None
             and self.custom_shell is not None
         ):
-            if narrow:
+            if not self.custom_panel_visible:
+                self.custom_shell.grid_remove()
                 self.content.columnconfigure(0, weight=1, uniform="")
                 self.content.columnconfigure(1, weight=0, uniform="")
-                self.content.rowconfigure(0, weight=3)
-                self.content.rowconfigure(1, weight=2)
-                self.status_shell.grid_configure(
-                    row=0, column=0, padx=0, pady=(0, 6),
-                )
-                self.custom_shell.grid_configure(
-                    row=1, column=0, padx=0, pady=(6, 0),
-                )
-            else:
-                self.content.columnconfigure(0, weight=11, uniform="content")
-                self.content.columnconfigure(1, weight=9, uniform="content")
                 self.content.rowconfigure(0, weight=1)
                 self.content.rowconfigure(1, weight=0)
                 self.status_shell.grid_configure(
-                    row=0, column=0, padx=(0, 6), pady=0,
+                    row=0, column=0, columnspan=2, padx=0, pady=0,
                 )
-                self.custom_shell.grid_configure(
-                    row=0, column=1, padx=(6, 0), pady=0,
-                )
-        self._set_status_grid_columns(3 if compact else 2)
+            else:
+                self.custom_shell.grid()
+                if narrow:
+                    self.content.columnconfigure(0, weight=1, uniform="")
+                    self.content.columnconfigure(1, weight=0, uniform="")
+                    self.content.rowconfigure(0, weight=3)
+                    self.content.rowconfigure(1, weight=2)
+                    self.status_shell.grid_configure(
+                        row=0, column=0, columnspan=1, padx=0, pady=(0, 6),
+                    )
+                    self.custom_shell.grid_configure(
+                        row=1, column=0, padx=0, pady=(6, 0),
+                    )
+                else:
+                    self.content.columnconfigure(0, weight=11, uniform="content")
+                    self.content.columnconfigure(1, weight=9, uniform="content")
+                    self.content.rowconfigure(0, weight=1)
+                    self.content.rowconfigure(1, weight=0)
+                    self.status_shell.grid_configure(
+                        row=0, column=0, columnspan=1, padx=(0, 6), pady=0,
+                    )
+                    self.custom_shell.grid_configure(
+                        row=0, column=1, padx=(6, 0), pady=0,
+                    )
+        self._set_status_grid_columns(3 if self.fullscreen and compact else 2)
 
         self.hero.itemconfigure(
             "wide_header",
-            state="normal" if wide_header else "hidden",
+            state="normal" if show_header_telemetry else "hidden",
         )
-        if wide_header:
-            self.preview_shell.place(
-                relx=1.0, x=-238, y=8, width=224, height=138,
-            )
+        if show_preview:
+            if compact:
+                self.preview_shell.place(
+                    relx=1.0, x=-182, y=8, width=168, height=116,
+                )
+            else:
+                self.preview_shell.place(
+                    relx=1.0, x=-238, y=8, width=224, height=138,
+                )
         else:
             self.preview_shell.place_forget()
 
         if compact:
             self.hero.itemconfigure(self.hero_subtitle, state="hidden")
-            self.hero.coords(self.current_badge, 19, 101)
-            control_y = 80
+            self.hero.coords(self.current_badge, 19, 114)
+            control_y = 106
+            control_height = 22
             self.custom_preview.configure(height=66)
             self.custom_head.pack_configure(pady=(7, 3))
             self.custom_body.pack_configure(pady=(0, 8))
@@ -2595,14 +2648,15 @@ class WorkStatusController:
             self.hero.itemconfigure(self.hero_subtitle, state="normal")
             self.hero.coords(self.current_badge, 19, 120)
             control_y = 109
+            control_height = 27
             self.custom_preview.configure(height=118)
             self.custom_head.pack_configure(pady=(12, 8))
             self.custom_body.pack_configure(pady=(0, 14))
             self.custom_editor.pack_configure(pady=(9, 0))
             self.custom_send_button.pack_configure(pady=(9, 0), ipady=6)
-        self.theme_button.place_configure(y=control_y)
-        self.fullscreen_button.place_configure(y=control_y)
-        self.widget_button.place_configure(y=control_y)
+        self.theme_button.place_configure(y=control_y, height=control_height)
+        self.fullscreen_button.place_configure(y=control_y, height=control_height)
+        self.widget_button.place_configure(y=control_y, height=control_height)
         self.fullscreen_button.configure(
             text="EXIT FULL SCREEN" if self.fullscreen else "FULL SCREEN",
         )
