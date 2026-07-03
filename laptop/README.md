@@ -13,6 +13,8 @@ It uses only Python's standard library.
    `run_work_status.bat` remains available for troubleshooting.
 5. Enter a profile name and the address shown on the badge, then select
    **Save Badge** and **Connect**.
+6. Confirm that the same six-digit code appears on the laptop and badge, then
+   press **UP** on the badge. Pairing expires after 30 seconds.
 
 The controller remembers multiple named badges in `badge_profiles.json` beside
 the Python script, so copying the `laptop` folder also copies its profiles.
@@ -25,6 +27,12 @@ profile. Older profiles stored in
 local profile file is absent. For the most reliable setup, reserve each badge's
 IP address in your router's DHCP settings.
 
+Each laptop installation also has a random device identity and a separate
+per-badge authentication key in
+`%USERPROFILE%\.work_status_badge_device.json`. Do not share that file: a copy
+has the same authority as the paired laptop. The badge remembers up to eight
+approved controllers across restarts.
+
 The connected badge's battery percentage appears in the controller header and
 refreshes automatically every minute. Charging state is shown beside it.
 Use the **Dark**/**Light** control in the header to switch the controller
@@ -33,6 +41,11 @@ The liquid-glass header also contains a live badge display: it renders the last
 status payload received from the badge, including its matching vector symbol,
 message, colour treatment and battery indicator. Each Quick Signal tile uses
 the same symbol language for fast visual selection.
+
+The controller sizes itself to the current display. Select **Full Screen** or
+press **F11** for a borderless responsive view; press **Escape** to leave it.
+Select **Desktop Widget** (or press **Ctrl+Shift+W**) for a compact,
+always-on-top status controller. **Open Dashboard** restores the full window.
 
 ## Use
 
@@ -60,17 +73,37 @@ The badge uses the full screen for the current symbol and text:
   Press RESET to wake reliably.
 - Press **C** to show the temporary network-address screen.
 
-Both devices must be on the same local Wi-Fi network. The API has no password,
-so any device on that trusted network can update the sign.
+Both devices must be on the same local Wi-Fi network.
+
+## Secure pairing
+
+Pairing uses an ephemeral X25519 key exchange. The matching six-digit code
+detects key substitution, and the badge stores the resulting device key only
+after its physical **UP** button is pressed. The key itself is never sent over
+Wi-Fi.
+
+Every later request uses a fresh one-time challenge and HMAC-SHA256 signature,
+and the badge signs its response in return. Unknown devices, forged responses,
+altered commands, and replayed requests are rejected. To reject a pending
+request, press **DOWN**. To erase every remembered controller, press **C** and
+then **DOWN** while the address screen is visible. Each controller must then
+pair again.
+
+The status payload still travels over local HTTP, so authentication does not
+hide notes from a passive network observer. Continue to use WPA2/WPA3 on a
+trusted LAN; confidentiality would additionally require TLS.
 
 ## HTTP API
 
-The badge listens on port `8080` while the Work Status app is open:
+The badge listens on port `8080` while the Work Status app is open. Status
+requests require `X-Work-Device`, `X-Work-Nonce`, and `X-Work-Signature`
+headers. The supported controller obtains the nonce from `/api/challenge` and
+calculates the HMAC automatically:
 
 ```text
+GET  /api/challenge?device_id=<paired-device-id>
 GET  /api/status
 POST /api/status
-Content-Type: application/json
 
 {"status":"meeting","note":"Back at 3pm"}
 ```

@@ -65,9 +65,14 @@ Badge controls:
 
 - **A** cycles through Available, Meeting, Focus, Away, Lunch, Sleep, and the
   last custom design.
+- **UP** approves a pending controller only when the same six-digit pairing
+  code is visible on the badge and controller.
+- **DOWN** rejects a pending pairing request.
 - **B twice quickly** turns off the screen, Wi-Fi, and lights using Mona-OS
   hardware sleep. Press **RESET** to wake reliably.
 - **C** reveals the badge IP address for eight seconds.
+- **C, then DOWN** clears all remembered controllers while the address screen
+  is visible.
 - **HOME** closes the server and returns to the launcher.
 
 ### Laptop controller
@@ -92,11 +97,22 @@ Setup:
    `Work Status.pyw`. Python 3 with Tkinter is required.
 4. Press **C** on the badge and enter the displayed address in the controller.
 5. Give it a name, select **Save**, and then **Connect**.
-6. Select a preset or create a custom status.
+6. Check that the six-digit code matches on both screens, then press **UP** on
+   the badge to approve this controller.
+7. Select a preset or create a custom status.
 
 The controller is dependency-free and stores profiles in
 `laptop/badge_profiles.json`. That file may contain private LAN addresses and
 is intentionally ignored by Git.
+
+Secure device credentials are stored separately in
+`%USERPROFILE%\.work_status_badge_device.json`. The badge remembers up to eight
+approved controllers. X25519 protects pairing, and every later request is
+authenticated with a one-time challenge and mutual HMAC-SHA256 signatures.
+
+The Windows dashboard automatically fits the current screen. Use **Full
+Screen** (or **F11**) for a responsive borderless view, and **Desktop Widget**
+for a compact always-on-top controller.
 
 
 ## Desk Clock
@@ -147,9 +163,12 @@ Install only this app by copying [`apps/currency`](apps/currency) to
 
 ### Local HTTP API
 
-While Work Status is open, the badge listens on port `8080`:
+While Work Status is open, the badge listens on port `8080`. Calls to
+`/api/status` require a paired device ID, one-time nonce from `/api/challenge`,
+and HMAC-SHA256 signature:
 
 ```http
+GET /api/challenge?device_id=<paired-device-id>
 GET /api/status
 ```
 
@@ -173,8 +192,8 @@ A custom request looks like:
 }
 ```
 
-The API is deliberately unauthenticated. Use it only on a trusted home network;
-any device that can reach the badge can update the sign.
+Unknown devices and replayed or modified commands are rejected. Payloads are
+authenticated but not encrypted, so use WPA2/WPA3 on a trusted local network.
 
 ## Repository layout
 

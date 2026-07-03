@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import binascii
+import hashlib
+import hmac
 import json
+import os
 import queue
+import socket
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import colorchooser, ttk
@@ -14,8 +20,14 @@ from urllib import error, parse, request
 APP_TITLE = "Work Status Badge"
 CONFIG_PATH = Path(__file__).resolve().with_name("badge_profiles.json")
 LEGACY_CONFIG_PATH = Path.home() / ".work_status_badge.json"
+DEVICE_CONFIG_PATH = Path.home() / ".work_status_badge_device.json"
 API_PATH = "/api/status"
 REQUEST_TIMEOUT = 2.5
+PAIRING_TIMEOUT = 35
+PAIRING_REQUEST_TIMEOUT = 10
+X25519_PRIME = (1 << 255) - 19
+X25519_A24 = 121665
+X25519_BASE = b"\x09" + (b"\x00" * 31)
 STATUSES = {
     "available": ("Available", "Open for collaboration", "#2ebe5c"),
     "meeting": ("In a meeting", "Please do not disturb", "#f85149"),
@@ -63,6 +75,101 @@ THEMES = {
 }
 
 
+class PairingRequired(RuntimeError):
+    pass
+
+
+class AuthenticationFailed(RuntimeError):
+    pass
+
+
+def x25519(private_key: bytes, peer_public: bytes) -> bytes:
+    """Return an RFC 7748 X25519 shared secret."""
+    scalar_bytes = bytearray(private_key)
+    scalar_bytes[0] &= 248
+    scalar_bytes[31] &= 127
+    scalar_bytes[31] |= 64
+    scalar = int.from_bytes(scalar_bytes, "little")
+    x_1 = int.from_bytes(peer_public, "little") % X25519_PRIME
+    x_2, z_2 = 1, 0
+    x_3, z_3 = x_1, 1
+    swap = 0
+    for bit_index in range(254, -1, -1):
+        bit = (scalar >> bit_index) & 1
+        swap ^= bit
+        if swap:
+            x_2, x_3 = x_3, x_2
+            z_2, z_3 = z_3, z_2
+        swap = bit
+        a = (x_2 + z_2) % X25519_PRIME
+        aa = (a * a) % X25519_PRIME
+        b = (x_2 - z_2) % X25519_PRIME
+        bb = (b * b) % X25519_PRIME
+        e = (aa - bb) % X25519_PRIME
+        c = (x_3 + z_3) % X25519_PRIME
+        d = (x_3 - z_3) % X25519_PRIME
+        da = (d * a) % X25519_PRIME
+        cb = (c * b) % X25519_PRIME
+        x_3 = ((da + cb) * (da + cb)) % X25519_PRIME
+        z_3 = (x_1 * (da - cb) * (da - cb)) % X25519_PRIME
+        x_2 = (aa * bb) % X25519_PRIME
+        z_2 = (e * (aa + X25519_A24 * e)) % X25519_PRIME
+    if swap:
+        x_2, x_3 = x_3, x_2
+        z_2, z_3 = z_3, z_2
+    result = x_2 * pow(z_2, X25519_PRIME - 2, X25519_PRIME)
+    return (result % X25519_PRIME).to_bytes(32, "little")
+
+
+def pairing_transcript(
+    device_id: str,
+    client_public: bytes,
+    badge_public: bytes,
+) -> bytes:
+    return (
+        b"work-status-pair-v1\x00"
+        + device_id.encode("ascii")
+        + client_public
+        + badge_public
+    )
+
+
+def derive_pairing_key(shared_secret: bytes, transcript: bytes) -> bytes:
+    return hashlib.sha256(
+        b"work-status-key-v1\x00" + shared_secret + transcript
+    ).digest()
+
+
+def pairing_code(transcript: bytes) -> str:
+    digest = hashlib.sha256(
+        b"work-status-code-v1\x00" + transcript
+    ).digest()
+    return "%06d" % (int.from_bytes(digest[:4], "big") % 1000000)
+
+
+def auth_message(method: str, path: str, nonce: str, body: bytes) -> bytes:
+    body_hash = hashlib.sha256(body).hexdigest()
+    return ("%s\n%s\n%s\n%s" % (
+        method, path, nonce, body_hash,
+    )).encode("ascii")
+
+
+def response_auth_message(nonce: str, body: bytes) -> bytes:
+    body_hash = hashlib.sha256(body).hexdigest()
+    return ("response\n%s\n%s" % (nonce, body_hash)).encode("ascii")
+
+
+def fitted_window_geometry(screen_width: int, screen_height: int) -> str:
+    """Fit the dashboard to the display while leaving room for OS chrome."""
+    width = min(1080, max(720, screen_width - 80))
+    height = min(830, max(500, screen_height - 96))
+    width = min(width, screen_width)
+    height = min(height, screen_height)
+    x = max(0, (screen_width - width) // 2)
+    y = max(0, (screen_height - height) // 2)
+    return "%dx%d+%d+%d" % (width, height, x, y)
+
+
 def darken_hex(color: str, divisor: int = 5) -> str:
     """Return the badge's dark background treatment for an accent color."""
     return "#%02X%02X%02X" % tuple(
@@ -101,17 +208,74 @@ def badge_base_url(address: str) -> str:
     return "http://%s:%d" % (host, port)
 
 
+def normalize_device_config(data: object) -> dict:
+    result = {"version": 1, "id": "", "name": "", "keys": {}}
+    if not isinstance(data, dict):
+        return result
+    device_id = data.get("id", "")
+    if (
+        isinstance(device_id, str)
+        and len(device_id) == 32
+        and all(char in "0123456789abcdef" for char in device_id)
+    ):
+        result["id"] = device_id
+    name = data.get("name", "")
+    if isinstance(name, str):
+        result["name"] = name.strip()[:16]
+    keys = data.get("keys", {})
+    if isinstance(keys, dict):
+        for address, key in keys.items():
+            if (
+                isinstance(address, str)
+                and address.startswith("http://")
+                and isinstance(key, str)
+                and len(key) == 64
+                and all(char in "0123456789abcdef" for char in key)
+            ):
+                result["keys"][address] = key
+    return result
+
+
+def load_device_config() -> dict:
+    try:
+        config = normalize_device_config(
+            json.loads(DEVICE_CONFIG_PATH.read_text(encoding="utf-8"))
+        )
+    except (OSError, ValueError):
+        config = normalize_device_config({})
+    if not config["id"]:
+        config["id"] = binascii.hexlify(os.urandom(16)).decode("ascii")
+    if not config["name"]:
+        config["name"] = (socket.gethostname().strip() or "Laptop")[:16]
+    save_device_config(config)
+    return config
+
+
+def save_device_config(config: dict) -> None:
+    try:
+        DEVICE_CONFIG_PATH.write_text(
+            json.dumps(normalize_device_config(config), indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
 class BadgeClient:
-    def __init__(self, address: str):
+    def __init__(
+        self,
+        address: str,
+        device_id: str = "",
+        device_name: str = "",
+        device_key: bytes | None = None,
+    ):
         self.base_url = badge_base_url(address)
+        self.device_id = device_id
+        self.device_name = device_name[:16] or "Laptop"
+        self.device_key = device_key
 
     def get_status(self) -> dict:
-        req = request.Request(
-            self.base_url + API_PATH,
-            headers={"Accept": "application/json"},
-            method="GET",
-        )
-        return self._send(req)
+        return self._signed_request(API_PATH, "GET")
 
     def set_status(self, status: str, note: str = "") -> dict:
         if status not in STATUSES:
@@ -120,16 +284,7 @@ class BadgeClient:
             "status": status,
             "note": note.strip()[:24],
         }).encode("utf-8")
-        req = request.Request(
-            self.base_url + API_PATH,
-            data=payload,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        return self._send(req)
+        return self._signed_request(API_PATH, "POST", payload)
 
     def set_custom(self, text: str, symbol: str, color: str) -> dict:
         if symbol not in CUSTOM_SYMBOLS.values():
@@ -146,21 +301,160 @@ class BadgeClient:
             "custom_symbol": symbol,
             "custom_color": color.upper(),
         }).encode("utf-8")
-        req = request.Request(
-            self.base_url + API_PATH,
-            data=payload,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        return self._signed_request(API_PATH, "POST", payload)
+
+    def begin_pairing(self) -> dict:
+        if not self.device_id:
+            raise RuntimeError("This controller has no device identity.")
+        private_key = os.urandom(32)
+        client_public = x25519(private_key, X25519_BASE)
+        payload = json.dumps({
+            "device_id": self.device_id,
+            "device_name": self.device_name,
+            "public_key": binascii.hexlify(client_public).decode("ascii"),
+        }).encode("utf-8")
+        result = self._send(
+            request.Request(
+                self.base_url + "/api/pair",
+                data=payload,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            ),
+            timeout=PAIRING_REQUEST_TIMEOUT,
         )
-        return self._send(req)
+        try:
+            badge_public = binascii.unhexlify(result["public_key"])
+        except (KeyError, ValueError, binascii.Error) as exc:
+            raise RuntimeError("Badge returned an invalid pairing key.") from exc
+        if len(badge_public) != 32:
+            raise RuntimeError("Badge returned an invalid pairing key.")
+        transcript = pairing_transcript(
+            self.device_id, client_public, badge_public,
+        )
+        code = pairing_code(transcript)
+        if result.get("code") != code:
+            raise RuntimeError(
+                "Pairing code mismatch. Cancel pairing and check the network."
+            )
+        shared = x25519(private_key, badge_public)
+        if shared == b"\x00" * 32:
+            raise RuntimeError("Badge returned an unsafe pairing key.")
+        return {
+            "code": code,
+            "key": derive_pairing_key(shared, transcript),
+        }
+
+    def get_pairing_status(self) -> str:
+        result = self._send(request.Request(
+            self.base_url
+            + "/api/pair/status?device_id="
+            + parse.quote(self.device_id),
+            headers={"Accept": "application/json"},
+            method="GET",
+        ))
+        return str(result.get("status", "unknown"))
+
+    def _signed_request(
+        self,
+        path: str,
+        method: str,
+        body: bytes = b"",
+    ) -> dict:
+        if not self.device_id or self.device_key is None:
+            raise PairingRequired("Pair this controller before connecting.")
+        challenge = self._send(request.Request(
+            self.base_url
+            + "/api/challenge?device_id="
+            + parse.quote(self.device_id),
+            headers={"Accept": "application/json"},
+            method="GET",
+        ))
+        nonce = challenge.get("nonce", "")
+        if not isinstance(nonce, str) or len(nonce) != 32:
+            raise RuntimeError("Badge returned an invalid security challenge.")
+        signature = hmac.new(
+            self.device_key,
+            auth_message(method, path, nonce, body),
+            hashlib.sha256,
+        ).hexdigest()
+        headers = {
+            "Accept": "application/json",
+            "X-Work-Device": self.device_id,
+            "X-Work-Nonce": nonce,
+            "X-Work-Signature": signature,
+        }
+        data = None
+        if method == "POST":
+            data = body
+            headers["Content-Type"] = "application/json"
+        return self._send(
+            request.Request(
+                self.base_url + path,
+                data=data,
+                headers=headers,
+                method=method,
+            ),
+            response_key=self.device_key,
+            response_nonce=nonce,
+        )
 
     @staticmethod
-    def _send(req: request.Request) -> dict:
-        with request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
-            data = json.loads(response.read().decode("utf-8"))
+    def _send(
+        req: request.Request,
+        timeout: float = REQUEST_TIMEOUT,
+        response_key: bytes | None = None,
+        response_nonce: str = "",
+    ) -> dict:
+        try:
+            with request.urlopen(req, timeout=timeout) as response:
+                body = response.read()
+                if response_key is not None:
+                    supplied = response.headers.get(
+                        "X-Work-Signature", "",
+                    )
+                    expected = hmac.new(
+                        response_key,
+                        response_auth_message(response_nonce, body),
+                        hashlib.sha256,
+                    ).hexdigest()
+                    if not hmac.compare_digest(supplied, expected):
+                        raise AuthenticationFailed(
+                            "Badge response authentication failed."
+                        )
+                data = json.loads(body.decode("utf-8"))
+        except error.HTTPError as exc:
+            try:
+                payload = json.loads(exc.read().decode("utf-8"))
+                message = str(payload.get("error", "request rejected"))
+            except Exception:
+                message = "request rejected"
+            if exc.code == 403 and message == "pairing required":
+                raise PairingRequired(
+                    "This controller is not paired with the badge."
+                ) from exc
+            if exc.code == 401:
+                raise AuthenticationFailed(
+                    "Badge authentication failed. Press C then DOWN on the "
+                    "badge to clear trust, then select Connect."
+                ) from exc
+            if exc.code == 409 and message == "device already paired":
+                raise AuthenticationFailed(
+                    "The badge remembers this device but its local key is "
+                    "missing. Press C then DOWN on the badge, then Connect."
+                ) from exc
+            if exc.code == 409 and message == "trusted device limit reached":
+                raise RuntimeError(
+                    "The badge already remembers eight controllers. Press C "
+                    "then DOWN on the badge to clear them before pairing."
+                ) from exc
+            raise RuntimeError(
+                "Badge rejected the request (HTTP %d): %s" % (
+                    exc.code, message,
+                )
+            ) from exc
         if not isinstance(data, dict):
             raise RuntimeError("The badge returned an unexpected response.")
         return data
@@ -265,11 +559,20 @@ class WorkStatusController:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("1080x830")
-        self.root.minsize(1040, 790)
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        self.root.geometry(fitted_window_geometry(screen_width, screen_height))
+        self.root.minsize(
+            min(820, max(640, screen_width - 80)),
+            min(620, max(500, screen_height - 96)),
+        )
         self.root.configure(bg="#eaf2f8")
 
         config = load_config()
+        device_config = load_device_config()
+        self.device_id = device_config["id"]
+        self.device_name = device_config["name"]
+        self.device_keys: dict[str, str] = dict(device_config["keys"])
         self.profiles: dict[str, str] = dict(config["badges"])
         selected = config["selected"]
         selected_address = self.profiles.get(selected, "")
@@ -298,6 +601,13 @@ class WorkStatusController:
         self.badge_charging = False
         self.busy = False
         self.closing = False
+        self.fullscreen = False
+        self.windowed_geometry = self.root.geometry()
+        self.widget_window: tk.Toplevel | None = None
+        self.widget_buttons: dict[str, tk.Button] = {}
+        self.widget_battery_var = tk.StringVar(value="--%")
+        self._responsive_after: str | None = None
+        self.pairing_active = False
         self.result_queue: queue.Queue[tuple[str, object, str]] = queue.Queue()
         self.status_buttons: dict[str, tk.Button] = {}
 
@@ -305,8 +615,13 @@ class WorkStatusController:
         self.note_var.trace_add("write", self._limit_note)
         self.custom_text_var.trace_add("write", self._limit_custom_text)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+        self.root.bind("<F11>", self.toggle_fullscreen)
+        self.root.bind("<Escape>", self._escape_view)
+        self.root.bind("<Control-Shift-W>", self.open_widget)
+        self.root.bind("<Configure>", self._on_root_configure)
         self.root.after(100, self._poll_results)
         self.root.after(60000, self._refresh_battery_periodically)
+        self.root.after_idle(self._apply_responsive_layout)
 
         if self.address_var.get().strip():
             self.root.after(250, self.refresh_status)
@@ -436,7 +751,7 @@ class WorkStatusController:
             18, 67, text="STATUS COMMAND", anchor="w", fill=text,
             font=("Segoe UI Semibold", 24),
         )
-        self.hero.create_text(
+        self.hero_subtitle = self.hero.create_text(
             19, 95,
             text="Broadcast your workspace signal",
             anchor="w",
@@ -470,13 +785,19 @@ class WorkStatusController:
         def chip(x1, x2, title):
             self.hero.create_rectangle(
                 x1 + 2, 24, x2 + 2, 100, fill=border, outline="",
+                tags="wide_header",
             )
             self.hero.create_rectangle(
                 x1, 22, x2, 98, fill=panel_raised, outline=border, width=1,
+                tags="wide_header",
             )
-            self.hero.create_line(x1 + 1, 23, x2 - 1, 23, fill=border_hot)
+            self.hero.create_line(
+                x1 + 1, 23, x2 - 1, 23, fill=border_hot,
+                tags="wide_header",
+            )
             self.hero.create_line(
                 x1 + 9, 89, x1 + 27, 89, fill=cyan, width=2,
+                tags="wide_header",
             )
             self.hero.create_text(
                 x1 + 13, 42,
@@ -484,11 +805,13 @@ class WorkStatusController:
                 anchor="w",
                 fill=muted,
                 font=("Consolas", 7, "bold"),
+                tags="wide_header",
             )
 
         chip(402, 510, "LINK STATE")
         self.connection_dot = self.hero.create_oval(
             416, 59, 426, 69, fill="#6e7f93", outline="",
+            tags="wide_header",
         )
         self.connection_state_display = self.hero.create_text(
             434, 64,
@@ -496,6 +819,7 @@ class WorkStatusController:
             anchor="w",
             fill="#a9b8c9",
             font=("Consolas", 9, "bold"),
+            tags="wide_header",
         )
         chip(520, 628, "BADGE POWER")
         self.battery_display = self.hero.create_text(
@@ -504,6 +828,7 @@ class WorkStatusController:
             anchor="w",
             fill=muted,
             font=("Consolas", 13, "bold"),
+            tags="wide_header",
         )
         chip(638, 756, "ACTIVE SIGNAL")
         self.current_status_display = self.hero.create_text(
@@ -512,19 +837,20 @@ class WorkStatusController:
             anchor="w",
             fill=text,
             font=("Segoe UI Semibold", 10),
+            tags="wide_header",
         )
 
-        preview_shell = tk.Frame(
+        self.preview_shell = tk.Frame(
             self.hero,
             bg=border,
             highlightbackground=border,
             highlightthickness=1,
         )
-        preview_shell.place(
+        self.preview_shell.place(
             relx=1.0, x=-238, y=8, width=224, height=138,
         )
         self.current_badge_preview = tk.Canvas(
-            preview_shell,
+            self.preview_shell,
             bg="#080a0f",
             highlightthickness=0,
         )
@@ -537,9 +863,42 @@ class WorkStatusController:
         )
         self._update_current_badge_preview()
 
+        self.fullscreen_button = tk.Button(
+            self.hero,
+            text="FULL SCREEN",
+            command=self.toggle_fullscreen,
+            bg=panel_raised,
+            fg=text,
+            activebackground=palette["active"],
+            activeforeground=text,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=border,
+            font=("Segoe UI Semibold", 8),
+            cursor="hand2",
+        )
+        self.fullscreen_button.place(x=384, y=109, width=104, height=27)
+        self.widget_button = tk.Button(
+            self.hero,
+            text="DESKTOP WIDGET",
+            command=self.open_widget,
+            bg=panel_raised,
+            fg=cyan,
+            activebackground=palette["active"],
+            activeforeground=text,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=border,
+            font=("Segoe UI Semibold", 8),
+            cursor="hand2",
+        )
+        self.widget_button.place(x=498, y=109, width=120, height=27)
+
         # Connection bay.
-        profile_shell, profile = card(self.root)
-        profile_shell.pack(fill="x", padx=22, pady=(0, 12))
+        self.profile_shell, profile = card(self.root)
+        self.profile_shell.pack(fill="x", padx=22, pady=(0, 12))
         heading = tk.Frame(profile, bg=panel)
         heading.pack(fill="x", padx=16, pady=(10, 6))
         tk.Label(
@@ -615,14 +974,14 @@ class WorkStatusController:
         self.delete_button.pack(side="left", padx=(6, 0), ipady=4)
 
         # Preset signals and custom composer.
-        content = tk.Frame(self.root, bg=bg)
-        content.pack(fill="both", expand=True, padx=22)
-        content.columnconfigure(0, weight=11, uniform="content")
-        content.columnconfigure(1, weight=9, uniform="content")
-        content.rowconfigure(0, weight=1)
-        status_shell, status_card = card(content)
+        self.content = tk.Frame(self.root, bg=bg)
+        self.content.pack(fill="both", expand=True, padx=22)
+        self.content.columnconfigure(0, weight=11, uniform="content")
+        self.content.columnconfigure(1, weight=9, uniform="content")
+        self.content.rowconfigure(0, weight=1)
+        status_shell, status_card = card(self.content)
         status_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        custom_shell, custom_card = card(content)
+        custom_shell, custom_card = card(self.content)
         custom_shell.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
         note_head = tk.Frame(status_card, bg=panel)
@@ -750,27 +1109,29 @@ class WorkStatusController:
         for row in range(3):
             grid.rowconfigure(row, weight=1)
 
-        custom_head = tk.Frame(custom_card, bg=panel)
-        custom_head.pack(fill="x", padx=16, pady=(12, 8))
+        self.custom_head = tk.Frame(custom_card, bg=panel)
+        self.custom_head.pack(fill="x", padx=16, pady=(12, 8))
         tk.Label(
-            custom_head,
+            self.custom_head,
             text="03  SIGNAL LAB",
             bg=panel,
             fg=text,
             font=("Segoe UI Semibold", 12),
         ).pack(anchor="w")
         tk.Label(
-            custom_head,
+            self.custom_head,
             text="Badge-accurate vector preview",
             bg=panel,
             fg=muted,
             font=("Segoe UI", 8),
         ).pack(anchor="w", pady=(2, 0))
 
-        custom_body = tk.Frame(custom_card, bg=panel)
-        custom_body.pack(fill="both", expand=True, padx=15, pady=(0, 14))
+        self.custom_body = tk.Frame(custom_card, bg=panel)
+        self.custom_body.pack(
+            fill="both", expand=True, padx=15, pady=(0, 14),
+        )
         self.custom_preview = tk.Canvas(
-            custom_body,
+            self.custom_body,
             height=118,
             bg=darken_hex(self.custom_color),
             highlightbackground=border_hot,
@@ -781,22 +1142,22 @@ class WorkStatusController:
             "<Configure>", lambda _event: self._update_custom_preview(),
         )
 
-        custom_editor = tk.Frame(custom_body, bg=panel)
-        custom_editor.pack(fill="both", expand=True, pady=(9, 0))
+        self.custom_editor = tk.Frame(self.custom_body, bg=panel)
+        self.custom_editor.pack(fill="both", expand=True, pady=(9, 0))
         tk.Label(
-            custom_editor,
+            self.custom_editor,
             text="MESSAGE",
             bg=panel,
             fg=muted,
             font=("Consolas", 8, "bold"),
         ).pack(anchor="w")
         ttk.Entry(
-            custom_editor,
+            self.custom_editor,
             textvariable=self.custom_text_var,
             style="Dark.TEntry",
             font=("Segoe UI Semibold", 12),
         ).pack(fill="x", pady=(4, 8))
-        options = tk.Frame(custom_editor, bg=panel)
+        options = tk.Frame(self.custom_editor, bg=panel)
         options.pack(fill="x")
         self.custom_symbol_picker = ttk.Combobox(
             options,
@@ -830,7 +1191,7 @@ class WorkStatusController:
             side="left", padx=(7, 0), ipady=4,
         )
         self.custom_send_button = tk.Button(
-            custom_editor,
+            self.custom_editor,
             text="BROADCAST CUSTOM SIGNAL",
             command=self.send_custom,
             bg="#8957e5",
@@ -847,8 +1208,14 @@ class WorkStatusController:
         self._update_custom_preview()
 
         # Persistent system log.
-        activity_shell, activity = card(self.root)
-        activity_shell.pack(fill="x", padx=22, pady=(8, 10))
+        self.activity_shell, activity = card(self.root)
+        self.activity_shell.pack(
+            side="bottom",
+            before=self.content,
+            fill="x",
+            padx=22,
+            pady=(8, 10),
+        )
         self.activity_dot = tk.Label(
             activity,
             text="\u25cf",
@@ -1875,10 +2242,43 @@ class WorkStatusController:
         canvas.delete("preview")
 
         width = max(canvas.winfo_width(), 320)
+        height = canvas.winfo_height()
         cx = width / 2
         accent = self.custom_color
         white = "#f7fbff"
         shadow = darken_hex(self.custom_color, 3)
+
+        if height < 90:
+            canvas.create_line(
+                14, 13, 42, 13, fill=accent, width=2, tags="preview",
+            )
+            canvas.create_text(
+                14, 22,
+                text="LIVE PREVIEW",
+                anchor="w",
+                fill="#91a7c1",
+                font=("Consolas", 7, "bold"),
+                tags="preview",
+            )
+            canvas.create_text(
+                cx,
+                height / 2 + 8,
+                text=self.custom_text_var.get().strip().upper() or "CUSTOM",
+                fill=white,
+                width=max(width - 110, 180),
+                justify="center",
+                font=("Segoe UI Semibold", 12),
+                tags="preview",
+            )
+            canvas.create_text(
+                width - 14, 22,
+                text=symbol.upper(),
+                anchor="e",
+                fill=accent,
+                font=("Consolas", 8, "bold"),
+                tags="preview",
+            )
+            return
 
         canvas.create_line(
             18, 17, 54, 17, fill=accent, width=2, tags="preview",
@@ -2069,6 +2469,240 @@ class WorkStatusController:
                 "text": self.custom_text_var.get().strip()[:24] or "CUSTOM",
             },
         })
+        save_device_config({
+            "version": 1,
+            "id": self.device_id,
+            "name": self.device_name,
+            "keys": self.device_keys,
+        })
+
+    def _on_root_configure(self, event) -> None:
+        if event.widget is not self.root:
+            return
+        if self._responsive_after is not None:
+            self.root.after_cancel(self._responsive_after)
+        self._responsive_after = self.root.after(
+            60, self._apply_responsive_layout,
+        )
+
+    def _apply_responsive_layout(self) -> None:
+        """Keep the full dashboard usable on short and narrow displays."""
+        self._responsive_after = None
+        if self.closing or not self.root.winfo_exists():
+            return
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        compact = height < 780
+        wide_header = width >= 1000 and not compact
+        outer_pad = 14 if width < 1000 else 22
+
+        self.hero.configure(height=116 if compact else 154)
+        self.hero.pack_configure(
+            padx=outer_pad,
+            pady=(6, 5) if compact else (12, 8),
+        )
+        self.profile_shell.pack_configure(
+            padx=outer_pad,
+            pady=(0, 7) if compact else (0, 12),
+        )
+        self.content.pack_configure(padx=outer_pad)
+        self.activity_shell.pack_configure(
+            padx=outer_pad,
+            pady=(5, 5) if compact else (8, 10),
+        )
+
+        self.hero.itemconfigure(
+            "wide_header",
+            state="normal" if wide_header else "hidden",
+        )
+        if wide_header:
+            self.preview_shell.place(
+                relx=1.0, x=-238, y=8, width=224, height=138,
+            )
+        else:
+            self.preview_shell.place_forget()
+
+        if compact:
+            self.hero.itemconfigure(self.hero_subtitle, state="hidden")
+            self.hero.coords(self.current_badge, 19, 101)
+            control_y = 80
+            self.custom_preview.configure(height=66)
+            self.custom_head.pack_configure(pady=(7, 3))
+            self.custom_body.pack_configure(pady=(0, 8))
+            self.custom_editor.pack_configure(pady=(4, 0))
+            self.custom_send_button.pack_configure(pady=(5, 0), ipady=3)
+        else:
+            self.hero.itemconfigure(self.hero_subtitle, state="normal")
+            self.hero.coords(self.current_badge, 19, 120)
+            control_y = 109
+            self.custom_preview.configure(height=118)
+            self.custom_head.pack_configure(pady=(12, 8))
+            self.custom_body.pack_configure(pady=(0, 14))
+            self.custom_editor.pack_configure(pady=(9, 0))
+            self.custom_send_button.pack_configure(pady=(9, 0), ipady=6)
+        self.theme_button.place_configure(y=control_y)
+        self.fullscreen_button.place_configure(y=control_y)
+        self.widget_button.place_configure(y=control_y)
+        self.fullscreen_button.configure(
+            text="EXIT FULL SCREEN" if self.fullscreen else "FULL SCREEN",
+        )
+
+    def toggle_fullscreen(self, _event=None):
+        """Toggle a borderless view; Escape always returns to a window."""
+        self.fullscreen = not self.fullscreen
+        if self.fullscreen:
+            self.windowed_geometry = self.root.geometry()
+        self.root.attributes("-fullscreen", self.fullscreen)
+        self.root.after_idle(self._apply_responsive_layout)
+        return "break"
+
+    def _escape_view(self, _event=None):
+        if self.widget_window is not None:
+            self.close_widget()
+        elif self.fullscreen:
+            self.toggle_fullscreen()
+        return "break"
+
+    def open_widget(self, _event=None):
+        """Open an always-on-top compact controller and hide the dashboard."""
+        if self.widget_window is not None:
+            self.widget_window.lift()
+            return "break"
+
+        palette = THEMES[self.theme_name]
+        window = tk.Toplevel(self.root)
+        self.widget_window = window
+        window.title("Work Status Widget")
+        window.configure(bg=palette["bg"])
+        window.resizable(False, False)
+        window.attributes("-topmost", True)
+        window.protocol("WM_DELETE_WINDOW", self.close_widget)
+        window.bind("<Escape>", lambda _event: self.close_widget())
+
+        width, height = 410, 430
+        x = max(0, window.winfo_screenwidth() - width - 24)
+        y = 24
+        window.geometry("%dx%d+%d+%d" % (width, height, x, y))
+
+        header = tk.Frame(window, bg=palette["panel"])
+        header.pack(fill="x", padx=10, pady=(10, 6))
+        tk.Label(
+            header,
+            text="WORK STATUS",
+            bg=palette["panel"],
+            fg=palette["cyan"],
+            font=("Consolas", 9, "bold"),
+        ).pack(anchor="w", padx=12, pady=(10, 2))
+        tk.Label(
+            header,
+            textvariable=self.current_var,
+            bg=palette["panel"],
+            fg=palette["text"],
+            font=("Segoe UI Semibold", 15),
+            anchor="w",
+        ).pack(fill="x", padx=12)
+        tk.Label(
+            header,
+            textvariable=self.widget_battery_var,
+            bg=palette["panel"],
+            fg=palette["muted"],
+            font=("Consolas", 9, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(2, 10))
+
+        ttk.Entry(
+            window,
+            textvariable=self.note_var,
+            style="Dark.TEntry",
+            font=("Segoe UI", 10),
+        ).pack(fill="x", padx=10, pady=(0, 7))
+
+        grid = tk.Frame(window, bg=palette["bg"])
+        grid.pack(fill="both", expand=True, padx=6)
+        self.widget_buttons.clear()
+        for index, (status, details) in enumerate(STATUSES.items()):
+            label, _subtitle, color = details
+            button_bg = (
+                darken_hex(color, 6)
+                if self.theme_name == "dark"
+                else tint_hex(color, 0.9)
+            )
+            button = tk.Button(
+                grid,
+                text=label.upper(),
+                command=lambda selected=status: self.send_status(selected),
+                bg=button_bg,
+                fg=palette["text"],
+                activebackground=color,
+                activeforeground="#ffffff",
+                relief="flat",
+                bd=0,
+                highlightthickness=1,
+                highlightbackground=color,
+                font=("Segoe UI Semibold", 10),
+                cursor="hand2",
+            )
+            button.grid(
+                row=index // 2,
+                column=index % 2,
+                sticky="nsew",
+                padx=4,
+                pady=4,
+            )
+            self.widget_buttons[status] = button
+        for column in range(2):
+            grid.columnconfigure(column, weight=1)
+        for row in range(3):
+            grid.rowconfigure(row, weight=1)
+
+        footer = tk.Frame(window, bg=palette["panel"])
+        footer.pack(fill="x", padx=10, pady=(7, 10))
+        tk.Label(
+            footer,
+            textvariable=self.connection_var,
+            bg=palette["panel"],
+            fg=palette["muted"],
+            anchor="w",
+            font=("Segoe UI", 8),
+        ).pack(fill="x", padx=10, pady=(7, 4))
+        controls = tk.Frame(footer, bg=palette["panel"])
+        controls.pack(fill="x", padx=8, pady=(0, 7))
+        tk.Button(
+            controls,
+            text="CONNECT",
+            command=self.refresh_status,
+            bg=palette["cyan"],
+            fg="#031019",
+            relief="flat",
+            font=("Segoe UI Semibold", 9),
+            cursor="hand2",
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4), ipady=4)
+        tk.Button(
+            controls,
+            text="OPEN DASHBOARD",
+            command=self.close_widget,
+            bg=palette["raised"],
+            fg=palette["text"],
+            relief="flat",
+            font=("Segoe UI Semibold", 9),
+            cursor="hand2",
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0), ipady=4)
+
+        self.root.withdraw()
+        self._highlight_current()
+        window.lift()
+        window.focus_force()
+        return "break"
+
+    def close_widget(self) -> None:
+        if self.widget_window is not None:
+            self.widget_window.destroy()
+            self.widget_window = None
+            self.widget_buttons.clear()
+        if not self.closing:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
 
     def toggle_theme(self) -> None:
         """Switch themes while preserving the active controller state."""
@@ -2078,6 +2712,7 @@ class WorkStatusController:
             child.destroy()
         self.status_buttons.clear()
         self._build_ui()
+        self.root.after_idle(self._apply_responsive_layout)
         if self.current_payload:
             self._request_succeeded(
                 self.current_payload,
@@ -2235,17 +2870,94 @@ class WorkStatusController:
         self.refresh_button.configure(state=state)
         for button in self.status_buttons.values():
             button.configure(state=state)
+        for button in self.widget_buttons.values():
+            button.configure(state=state)
         self.custom_send_button.configure(state=state)
         self.connection_var.set(message)
         self.connection_label.configure(fg="#f2cc60" if busy else "#8fa4bd")
         if busy:
             self._set_connection_indicator("connecting", "CONNECTING…")
 
+    def _make_badge_client(self) -> BadgeClient:
+        base_url = badge_base_url(self.address_var.get())
+        key = None
+        key_hex = self.device_keys.get(base_url)
+        if key_hex:
+            try:
+                key = binascii.unhexlify(key_hex)
+            except (ValueError, binascii.Error):
+                self.device_keys.pop(base_url, None)
+        return BadgeClient(
+            self.address_var.get(),
+            device_id=self.device_id,
+            device_name=self.device_name,
+            device_key=key,
+        )
+
+    def _has_pairing_key(self) -> bool:
+        try:
+            return badge_base_url(self.address_var.get()) in self.device_keys
+        except ValueError:
+            return False
+
+    def start_pairing(self) -> None:
+        if self.busy:
+            return
+        try:
+            client = self._make_badge_client()
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+
+        self.pairing_active = True
+        self._set_busy(True, "Requesting secure pairing...")
+
+        def worker() -> None:
+            try:
+                pairing = client.begin_pairing()
+                self.result_queue.put((
+                    "pair_pending",
+                    {"code": pairing["code"]},
+                    "",
+                ))
+                deadline = time.monotonic() + PAIRING_TIMEOUT
+                while time.monotonic() < deadline and not self.closing:
+                    time.sleep(0.75)
+                    status = client.get_pairing_status()
+                    if status == "approved":
+                        self.result_queue.put((
+                            "pair_approved",
+                            {
+                                "address": client.base_url,
+                                "key": binascii.hexlify(
+                                    pairing["key"]
+                                ).decode("ascii"),
+                            },
+                            "Secure pairing complete.",
+                        ))
+                        return
+                    if status in ("rejected", "expired", "unknown"):
+                        raise RuntimeError(
+                            "Pairing was %s on the badge." % status
+                        )
+                raise RuntimeError(
+                    "Pairing timed out. Select Connect to retry."
+                )
+            except (error.URLError, TimeoutError, OSError) as exc:
+                reason = getattr(exc, "reason", exc)
+                self.result_queue.put((
+                    "error", None, "Cannot reach badge: %s" % reason,
+                ))
+            except (ValueError, RuntimeError) as exc:
+                self.result_queue.put(("error", None, str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _run_request(self, operation, success_message: str) -> None:
         if self.busy:
             return
         try:
-            client = BadgeClient(self.address_var.get())
+            client = self._make_badge_client()
         except ValueError as exc:
             self._show_error(str(exc))
             return
@@ -2255,6 +2967,12 @@ class WorkStatusController:
         def worker() -> None:
             try:
                 result = operation(client)
+            except PairingRequired as exc:
+                self.result_queue.put((
+                    "pair_required",
+                    {"address": client.base_url},
+                    str(exc),
+                ))
             except error.HTTPError as exc:
                 message = "Badge rejected the request (HTTP %d)." % exc.code
                 self.result_queue.put(("error", None, message))
@@ -2275,7 +2993,35 @@ class WorkStatusController:
                 kind, result, message = self.result_queue.get_nowait()
                 if kind == "success":
                     self._request_succeeded(result, message)
+                elif kind == "pair_pending":
+                    code = result["code"]
+                    self.current_var.set("PAIRING CODE  " + code)
+                    self.hero.itemconfigure(
+                        self.current_badge, text=self.current_var.get(),
+                    )
+                    self.connection_var.set(
+                        "Confirm %s on the badge, then press UP to approve."
+                        % code
+                    )
+                    self.connection_label.configure(fg="#f2cc60")
+                    self._set_connection_indicator(
+                        "connecting", "VERIFY CODE",
+                    )
+                elif kind == "pair_approved":
+                    self.device_keys[result["address"]] = result["key"]
+                    self.pairing_active = False
+                    self._persist_profiles()
+                    self._set_busy(False, message)
+                    self.connection_label.configure(fg="#3fb950")
+                    self._set_connection_indicator("connected", "PAIRED")
+                    self.root.after(150, self.refresh_status)
+                elif kind == "pair_required":
+                    self.device_keys.pop(result["address"], None)
+                    self._persist_profiles()
+                    self._set_busy(False, message)
+                    self.start_pairing()
                 else:
+                    self.pairing_active = False
                     self._request_failed(message)
         except queue.Empty:
             pass
@@ -2308,6 +3054,7 @@ class WorkStatusController:
             level = None
         self.badge_battery = level
         self.badge_charging = charging
+        self.widget_battery_var.set(text)
         self.hero.itemconfigure(
             self.battery_display,
             text=text,
@@ -2386,14 +3133,24 @@ class WorkStatusController:
             else:
                 if tile is not None:
                     tile.configure(highlightthickness=1)
+        for status, button in self.widget_buttons.items():
+            button.configure(
+                highlightthickness=3 if status == self.current_status else 1,
+            )
 
     def refresh_status(self) -> None:
+        if not self._has_pairing_key():
+            self.start_pairing()
+            return
         self._run_request(
             lambda client: client.get_status(),
             "Connected. Badge status loaded.",
         )
 
     def send_status(self, status: str) -> None:
+        if not self._has_pairing_key():
+            self._show_error("Select Connect and approve pairing first.")
+            return
         label = STATUSES[status][0]
         note = self.note_var.get()
         self._run_request(
@@ -2402,6 +3159,9 @@ class WorkStatusController:
         )
 
     def send_custom(self) -> None:
+        if not self._has_pairing_key():
+            self._show_error("Select Connect and approve pairing first.")
+            return
         text = self.custom_text_var.get()
         symbol = CUSTOM_SYMBOLS[self.custom_symbol_var.get()]
         color = self.custom_color
@@ -2413,6 +3173,9 @@ class WorkStatusController:
     def _close(self) -> None:
         self.closing = True
         self._persist_profiles()
+        if self.widget_window is not None:
+            self.widget_window.destroy()
+            self.widget_window = None
         self.root.destroy()
 
 
