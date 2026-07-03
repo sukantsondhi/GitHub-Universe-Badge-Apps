@@ -47,6 +47,20 @@ DEFAULT_CUSTOM = {
     "symbol": "star",
     "text": "HELLO",
 }
+THEMES = {
+    "light": {
+        "bg": "#eaf2f8", "panel": "#f9fcff", "raised": "#ffffff",
+        "field": "#ffffff", "border": "#cfdeea", "border_hot": "#078cb7",
+        "text": "#10213a", "muted": "#647a91", "cyan": "#078cb7",
+        "violet": "#7657d6", "active": "#e7f5fb",
+    },
+    "dark": {
+        "bg": "#090f18", "panel": "#111a27", "raised": "#182435",
+        "field": "#0d1622", "border": "#2b3c52", "border_hot": "#38bdf8",
+        "text": "#edf6ff", "muted": "#91a4b8", "cyan": "#38bdf8",
+        "violet": "#a78bfa", "active": "#21344a",
+    },
+}
 
 
 def darken_hex(color: str, divisor: int = 5) -> str:
@@ -156,7 +170,10 @@ def normalize_config(data: object) -> dict:
     """Return the current named-profile config, migrating the old format."""
     custom = dict(DEFAULT_CUSTOM)
     if not isinstance(data, dict):
-        return {"version": 3, "selected": "", "badges": {}, "custom": custom}
+        return {
+            "version": 4, "selected": "", "badges": {}, "custom": custom,
+            "theme": "light",
+        }
 
     stored_custom = data.get("custom")
     if isinstance(stored_custom, dict):
@@ -188,22 +205,28 @@ def normalize_config(data: object) -> dict:
         if selected not in clean_badges:
             selected = next(iter(clean_badges), "")
         return {
-            "version": 3,
+            "version": 4,
             "selected": selected,
             "badges": clean_badges,
             "custom": custom,
+            "theme": data.get("theme", "light")
+            if data.get("theme") in THEMES else "light",
         }
 
     # Version 1 stored just one address.
     old_address = data.get("address", "")
     if isinstance(old_address, str) and old_address.strip():
         return {
-            "version": 3,
+            "version": 4,
             "selected": "My Badge",
             "badges": {"My Badge": old_address.strip()},
             "custom": custom,
+            "theme": "light",
         }
-    return {"version": 3, "selected": "", "badges": {}, "custom": custom}
+    return {
+        "version": 4, "selected": "", "badges": {}, "custom": custom,
+        "theme": "light",
+    }
 
 
 def load_config() -> dict:
@@ -263,6 +286,7 @@ class WorkStatusController:
         self.custom_text_var = tk.StringVar(value=custom["text"])
         self.custom_symbol_var = tk.StringVar(value=symbol_label)
         self.custom_color = custom["color"]
+        self.theme_name = config.get("theme", "light")
         self.current_var = tk.StringVar(value="NOT CONNECTED")
         self.address_visible = False
         self.connection_var = tk.StringVar(
@@ -288,16 +312,18 @@ class WorkStatusController:
             self.root.after(250, self.refresh_status)
 
     def _build_ui(self) -> None:
-        bg = "#eaf2f8"
-        panel = "#f9fcff"
-        panel_raised = "#ffffff"
-        field = "#ffffff"
-        border = "#cfdeea"
-        border_hot = "#61bde1"
-        text = "#10213a"
-        muted = "#647a91"
-        cyan = "#078cb7"
-        violet = "#7657d6"
+        palette = THEMES[self.theme_name]
+        bg = palette["bg"]
+        panel = palette["panel"]
+        panel_raised = palette["raised"]
+        field = palette["field"]
+        border = palette["border"]
+        border_hot = palette["border_hot"]
+        text = palette["text"]
+        muted = palette["muted"]
+        cyan = palette["cyan"]
+        violet = palette["violet"]
+        self.root.configure(bg=bg)
 
         style = ttk.Style()
         style.theme_use("clam")
@@ -307,7 +333,7 @@ class WorkStatusController:
             foreground=text,
             insertcolor=text,
             bordercolor=border,
-            lightcolor="#e8f3f9",
+            lightcolor=field,
             darkcolor=border,
             padding=10,
         )
@@ -338,8 +364,8 @@ class WorkStatusController:
         def card(parent):
             shell = tk.Frame(
                 parent,
-                bg="#c9dce8",
-                highlightbackground="#dbe9f1",
+                bg=border,
+                highlightbackground=border,
                 highlightthickness=1,
             )
             body = tk.Frame(
@@ -364,7 +390,7 @@ class WorkStatusController:
                 command=command,
                 bg=button_bg,
                 fg=fg,
-                activebackground="#e7f5fb",
+                activebackground=palette["active"],
                 activeforeground=text,
                 relief="flat",
                 bd=0,
@@ -379,35 +405,28 @@ class WorkStatusController:
         self.hero = tk.Canvas(
             self.root,
             height=154,
-            bg="#f9fcff",
+            bg=panel,
             highlightthickness=0,
         )
         self.hero.pack(fill="x", padx=22, pady=(12, 8))
-        for y in range(154):
-            ratio = y / 153
-            color = "#%02x%02x%02x" % (
-                int(255 - 13 * ratio),
-                int(255 - 7 * ratio),
-                int(255 - 1 * ratio),
-            )
-            self.hero.create_line(0, y, 1100, y, fill=color)
+        self.hero.create_rectangle(0, 0, 1100, 154, fill=panel, outline="")
         for x in range(0, 1100, 36):
-            self.hero.create_line(x, 0, x, 154, fill="#e6f1f7")
+            self.hero.create_line(x, 0, x, 154, fill=border)
         for y in range(10, 154, 27):
-            self.hero.create_line(0, y, 1100, y, fill="#e6f1f7")
+            self.hero.create_line(0, y, 1100, y, fill=border)
         self.hero.create_polygon(
             390, 0, 580, 0, 485, 154, 295, 154,
-            fill="#edf8fc", outline="",
+            fill=palette["raised"], outline="",
         )
         self.hero.create_oval(
-            250, -170, 610, 190, fill="#f2ecff", outline="",
+            250, -170, 610, 190, fill=panel, outline="",
         )
         self.hero.create_oval(
-            360, -180, 650, 110, fill="#e4f8ff", outline="",
+            360, -180, 650, 110, fill=palette["raised"], outline="",
         )
         self.hero.create_line(0, 153, 1100, 153, fill=border_hot, width=2)
         self.hero.create_rectangle(
-            18, 16, 111, 36, fill="#e7f7fc", outline="#a8d7e8",
+            18, 16, 111, 36, fill=palette["raised"], outline=border,
         )
         self.hero.create_text(
             64, 26, text="TUFTY // LINK", fill=cyan,
@@ -431,13 +450,29 @@ class WorkStatusController:
             fill=cyan,
             font=("Consolas", 8, "bold"),
         )
+        self.theme_button = tk.Button(
+            self.hero,
+            text="☾  DARK" if self.theme_name == "light" else "☀  LIGHT",
+            command=self.toggle_theme,
+            bg=panel_raised,
+            fg=text,
+            activebackground=palette["active"],
+            activeforeground=text,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=border,
+            font=("Segoe UI Semibold", 8),
+            cursor="hand2",
+        )
+        self.theme_button.place(x=282, y=109, width=92, height=27)
 
         def chip(x1, x2, title):
             self.hero.create_rectangle(
-                x1 + 2, 24, x2 + 2, 100, fill="#d6e6ef", outline="",
+                x1 + 2, 24, x2 + 2, 100, fill=border, outline="",
             )
             self.hero.create_rectangle(
-                x1, 22, x2, 98, fill="#ffffff", outline=border, width=1,
+                x1, 22, x2, 98, fill=panel_raised, outline=border, width=1,
             )
             self.hero.create_line(x1 + 1, 23, x2 - 1, 23, fill=border_hot)
             self.hero.create_line(
@@ -481,8 +516,8 @@ class WorkStatusController:
 
         preview_shell = tk.Frame(
             self.hero,
-            bg="#c5d7e3",
-            highlightbackground="#dceaf2",
+            bg=border,
+            highlightbackground=border,
             highlightthickness=1,
         )
         preview_shell.place(
@@ -491,8 +526,7 @@ class WorkStatusController:
         self.current_badge_preview = tk.Canvas(
             preview_shell,
             bg="#080a0f",
-            highlightbackground="#ffffff",
-            highlightthickness=2,
+            highlightthickness=0,
         )
         self.current_badge_preview.pack(
             fill="both", expand=True, padx=4, pady=4,
@@ -632,8 +666,12 @@ class WorkStatusController:
 
         for index, (status, details) in enumerate(STATUSES.items()):
             label, subtitle, color = details
-            tile_bg = tint_hex(color, 0.91)
-            hover_bg = tint_hex(color, 0.82)
+            if self.theme_name == "dark":
+                tile_bg = darken_hex(color, 7)
+                hover_bg = darken_hex(color, 5)
+            else:
+                tile_bg = tint_hex(color, 0.91)
+                hover_bg = tint_hex(color, 0.82)
             tile = tk.Frame(
                 grid,
                 bg=tile_bg,
@@ -784,7 +822,7 @@ class WorkStatusController:
             relief="flat",
             padx=10,
             highlightthickness=1,
-            highlightbackground="#ffffff",
+            highlightbackground=border,
             font=("Consolas", 9),
             cursor="hand2",
         )
@@ -1601,21 +1639,18 @@ class WorkStatusController:
         payload = self.current_payload
 
         if not payload:
-            canvas.configure(bg="#eaf2f8")
-            canvas.create_rectangle(
-                2, 2, width - 2, height - 2,
-                outline="#8ba8ba", width=2,
-            )
+            palette = THEMES[self.theme_name]
+            canvas.configure(bg=palette["raised"])
             canvas.create_text(
                 width / 2, 48,
                 text="BADGE DISPLAY",
-                fill="#29445a",
+                fill=palette["text"],
                 font=("Consolas", 10, "bold"),
             )
             canvas.create_text(
                 width / 2, 72,
                 text="CONNECT TO SYNC",
-                fill="#6b8295",
+                fill=palette["muted"],
                 font=("Consolas", 7),
             )
             return
@@ -1639,10 +1674,6 @@ class WorkStatusController:
 
         white = "#f5f7fa"
         canvas.configure(bg=background)
-        canvas.create_rectangle(
-            2, 2, width - 2, height - 2,
-            outline=white, width=2,
-        )
         if status == "custom":
             symbol = str(payload.get("custom_symbol", "star"))
             self._draw_preview_symbol(
@@ -1849,11 +1880,6 @@ class WorkStatusController:
         white = "#f7fbff"
         shadow = darken_hex(self.custom_color, 3)
 
-        # The framing mirrors the physical badge's always-on border.
-        canvas.create_rectangle(
-            5, 5, width - 5, 113,
-            outline=white, width=2, tags="preview",
-        )
         canvas.create_line(
             18, 17, 54, 17, fill=accent, width=2, tags="preview",
         )
@@ -2033,15 +2059,30 @@ class WorkStatusController:
 
     def _persist_profiles(self) -> None:
         save_config({
-            "version": 3,
+            "version": 4,
             "selected": self.device_var.get(),
             "badges": self.profiles,
+            "theme": self.theme_name,
             "custom": {
                 "color": self.custom_color,
                 "symbol": CUSTOM_SYMBOLS[self.custom_symbol_var.get()],
                 "text": self.custom_text_var.get().strip()[:24] or "CUSTOM",
             },
         })
+
+    def toggle_theme(self) -> None:
+        """Switch themes while preserving the active controller state."""
+        self.theme_name = "dark" if self.theme_name == "light" else "light"
+        self._persist_profiles()
+        for child in self.root.winfo_children():
+            child.destroy()
+        self.status_buttons.clear()
+        self._build_ui()
+        if self.current_payload:
+            self._request_succeeded(
+                self.current_payload,
+                self.connection_var.get(),
+            )
 
     def choose_custom_color(self) -> None:
         _rgb, selected = colorchooser.askcolor(

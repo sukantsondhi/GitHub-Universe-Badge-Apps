@@ -27,6 +27,8 @@ IP address in your router's DHCP settings.
 
 The connected badge's battery percentage appears in the controller header and
 refreshes automatically every minute. Charging state is shown beside it.
+Use the **Dark**/**Light** control in the header to switch the controller
+theme. The selection is saved with the badge profiles.
 The liquid-glass header also contains a live badge display: it renders the last
 status payload received from the badge, including its matching vector symbol,
 message, colour treatment and battery indicator. Each Quick Signal tile uses
@@ -39,7 +41,8 @@ Enter an optional short note, then press **Available**, **In a meeting**,
 bowl. The badge changes immediately. Button A on the badge cycles through the
 six presets and the last custom status, clearing the note when a preset is
 selected. A bright border
-flashes when a remote update arrives.
+flashes briefly when a remote update arrives; the status screen no longer has
+a permanent white border.
 
 Use the **Signal Lab** to build a custom status. Choose a vector symbol (star,
 heart, check, alert, coffee, door, code or bolt), pick a colour, enter up to 24

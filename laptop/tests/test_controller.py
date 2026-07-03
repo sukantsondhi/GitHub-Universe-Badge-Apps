@@ -125,16 +125,27 @@ class ControllerTests(unittest.TestCase):
                 controller.CONFIG_PATH = Path(temp) / "badge_profiles.json"
                 controller.LEGACY_CONFIG_PATH = Path(temp) / "legacy.json"
                 expected = {
-                    "version": 3,
+                    "version": 4,
                     "selected": "Office",
                     "badges": {"Office": "192.168.1.42:8080"},
                     "custom": dict(controller.DEFAULT_CUSTOM),
+                    "theme": "light",
                 }
                 controller.save_config(expected)
                 self.assertEqual(controller.load_config(), expected)
         finally:
             controller.CONFIG_PATH = original_config
             controller.LEGACY_CONFIG_PATH = original_legacy
+
+    def test_saved_theme_is_normalized(self):
+        dark = normalize_config({
+            "badges": {"Office": "192.168.1.42"},
+            "selected": "Office",
+            "theme": "dark",
+        })
+        self.assertEqual(dark["theme"], "dark")
+        invalid = normalize_config({"theme": "neon"})
+        self.assertEqual(invalid["theme"], "light")
 
     def test_legacy_profile_is_loaded_when_local_file_is_empty(self):
         original_config = controller.CONFIG_PATH

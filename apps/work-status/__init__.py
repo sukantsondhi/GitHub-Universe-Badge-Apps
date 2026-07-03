@@ -565,23 +565,22 @@ def draw_custom_symbol():
     screen.brush = custom_accent
 
     if custom_symbol == "heart":
-        # Two lobes and tapered diagonals form a balanced filled heart.
-        size = 18 + pulse // 5
-        screen.draw(shapes.circle(62, 31, size))
-        screen.draw(shapes.circle(98, 31, size))
-        screen.draw(shapes.line(49, 39, 80, 75, 20))
-        screen.draw(shapes.line(111, 39, 80, 75, 20))
-        # Carve a clean centre notch so the lobes never merge into a blob.
+        # Compact lobes and equal diagonals keep the heart visually centred.
+        size = 15 + pulse // 6
+        screen.draw(shapes.circle(66, 31, size))
+        screen.draw(shapes.circle(94, 31, size))
+        screen.draw(shapes.line(55, 38, 80, 68, 17))
+        screen.draw(shapes.line(105, 38, 80, 68, 17))
         screen.brush = custom_background
-        screen.draw(shapes.circle(80, 11, 15))
+        screen.draw(shapes.circle(80, 15, 12))
     elif custom_symbol == "check":
         screen.draw(shapes.circle(80, 42, 32).stroke(6))
         screen.draw(shapes.line(57, 42, 73, 58, 8))
         screen.draw(shapes.line(73, 58, 105, 25, 8))
     elif custom_symbol == "alert":
-        screen.draw(shapes.line(80, 8, 43, 73, 6))
-        screen.draw(shapes.line(43, 73, 117, 73, 6))
-        screen.draw(shapes.line(117, 73, 80, 8, 6))
+        screen.draw(shapes.line(80, 9, 45, 72, 5))
+        screen.draw(shapes.line(45, 72, 115, 72, 5))
+        screen.draw(shapes.line(115, 72, 80, 9, 5))
         screen.brush = WHITE
         screen.draw(shapes.line(80, 31, 80, 52, 6))
         screen.draw(shapes.circle(80, 63, 3))
@@ -597,9 +596,9 @@ def draw_custom_symbol():
         screen.draw(shapes.line(88, 25 - other // 3,
                                 94, 10 - other // 3, 3))
     elif custom_symbol == "door":
-        screen.draw(shapes.rounded_rectangle(54, 6, 52, 72, 4).stroke(6))
-        screen.draw(shapes.line(65, 22, 95, 22, 4))
-        screen.draw(shapes.line(65, 61, 95, 61, 4))
+        screen.draw(shapes.rounded_rectangle(56, 7, 48, 70, 3).stroke(5))
+        screen.draw(shapes.line(66, 23, 94, 23, 3))
+        screen.draw(shapes.line(66, 60, 94, 60, 3))
         screen.brush = WHITE
         screen.draw(shapes.circle(92, 43, 3 + pulse // 4))
     elif custom_symbol == "code":
@@ -610,8 +609,8 @@ def draw_custom_symbol():
         screen.draw(shapes.line(116, 44, 98, 60, 7))
         screen.draw(shapes.line(88, 24, 72, 64, 6))
     elif custom_symbol == "bolt":
-        points = ((91, 5), (55, 45), (76, 45), (65, 80),
-                  (108, 34), (86, 34), (91, 5))
+        points = ((91, 7), (58, 43), (77, 43), (68, 77),
+                  (104, 36), (85, 36), (91, 7))
         for index in range(len(points) - 1):
             start = points[index]
             end = points[index + 1]
@@ -703,11 +702,8 @@ def draw_ui():
         )
         center_text(connection_text, 111)
 
-    # Keep a bright frame on screen at all times for door-sign visibility.
-    screen.brush = WHITE
-    screen.draw(shapes.rounded_rectangle(1, 1, 158, 118, 7).stroke(3))
-
-    # A second accent frame briefly confirms a remote status update.
+    # A brief accent frame confirms a remote status update without boxing in
+    # the status screen during normal use.
     if io.ticks < notification_until:
         screen.brush = accent
         screen.draw(shapes.rounded_rectangle(5, 5, 150, 110, 5).stroke(2))
