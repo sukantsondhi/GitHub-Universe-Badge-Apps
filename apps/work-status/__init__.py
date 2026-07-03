@@ -56,8 +56,8 @@ PURPLE = brushes.color(184, 120, 255)
 PURPLE_DARK = brushes.color(36, 20, 58)
 AMBER = brushes.color(255, 184, 72)
 AMBER_DARK = brushes.color(59, 39, 13)
-CURRY = brushes.color(255, 139, 61)
-CURRY_DARK = brushes.color(55, 20, 20)
+ORANGE = brushes.color(255, 159, 67)
+ORANGE_DARK = brushes.color(61, 29, 9)
 BLUE = brushes.color(88, 166, 255)
 BLUE_DARK = brushes.color(9, 27, 61)
 
@@ -517,34 +517,24 @@ def draw_away():
 
 
 def draw_lunch():
-    """Draw an animated curry bowl with rice, curry and rising steam."""
-    steam = int(io.ticks / 140) % 9
-    screen.brush = WHITE
-    screen.draw(shapes.line(54, 29 - steam // 3, 60, 11 - steam // 3, 3))
-    screen.draw(shapes.line(
-        79, 27 - ((steam + 3) % 9) // 3,
-        85, 8 - ((steam + 3) % 9) // 3, 3
-    ))
-    screen.draw(shapes.line(
-        104, 29 - ((steam + 6) % 9) // 3,
-        110, 11 - ((steam + 6) % 9) // 3, 3
-    ))
+    steam = int(io.ticks / 150) % 7
+    screen.brush = ORANGE_DARK
+    screen.draw(shapes.rounded_rectangle(20, 9, 120, 68, 10))
 
-    # Rice and curry sit above a large, high-contrast serving bowl.
+    # A crisp curry bowl with a visible rim and animated steam.
+    screen.brush = ORANGE
+    screen.draw(shapes.rounded_rectangle(33, 34, 94, 34, 9))
+    screen.brush = ORANGE_DARK
+    screen.draw(shapes.rounded_rectangle(39, 39, 82, 11, 4))
     screen.brush = WHITE
-    screen.draw(shapes.circle(62, 43, 15))
-    screen.draw(shapes.circle(80, 39, 18))
-    screen.draw(shapes.circle(99, 43, 15))
-    screen.brush = CURRY
-    screen.draw(shapes.rounded_rectangle(35, 40, 90, 17, 8))
-    screen.draw(shapes.rounded_rectangle(43, 48, 74, 29, 10))
-    screen.brush = CURRY_DARK
-    screen.draw(shapes.circle(61, 48, 3))
-    screen.draw(shapes.circle(80, 45, 4))
-    screen.draw(shapes.circle(101, 49, 3))
-    screen.brush = WHITE
-    screen.draw(shapes.line(112, 22, 125, 58, 4))
-    screen.draw(shapes.circle(127, 63, 5).stroke(3))
+    screen.draw(shapes.circle(57, 44, 3))
+    screen.draw(shapes.circle(80, 43, 3))
+    screen.draw(shapes.circle(103, 44, 3))
+    screen.draw(shapes.line(45, 71, 115, 71, 4))
+    screen.draw(shapes.line(58, 32 - steam // 3, 64, 16 - steam // 3, 4))
+    second = (steam + 3) % 7
+    screen.draw(shapes.line(91, 32 - second // 3,
+                            97, 16 - second // 3, 4))
 
 
 def draw_sleep():
@@ -568,59 +558,72 @@ def draw_sleep():
 def draw_custom_symbol():
     pulse = int(io.ticks / 100) % 16
     pulse = pulse if pulse < 8 else 15 - pulse
+
+    # A quiet halo keeps every icon centred without competing with its shape.
+    screen.brush = custom_accent
+    screen.draw(shapes.circle(80, 42, 37 + pulse // 3).stroke(2))
     screen.brush = custom_accent
 
     if custom_symbol == "heart":
-        screen.draw(shapes.circle(61, 33, 21 + pulse // 3))
-        screen.draw(shapes.circle(99, 33, 21 + pulse // 3))
-        screen.draw(shapes.line(45, 42, 80, 78, 27))
-        screen.draw(shapes.line(115, 42, 80, 78, 27))
+        # Two lobes and tapered diagonals form a balanced filled heart.
+        size = 18 + pulse // 5
+        screen.draw(shapes.circle(62, 31, size))
+        screen.draw(shapes.circle(98, 31, size))
+        screen.draw(shapes.line(49, 39, 80, 75, 20))
+        screen.draw(shapes.line(111, 39, 80, 75, 20))
+        # Carve a clean centre notch so the lobes never merge into a blob.
+        screen.brush = custom_background
+        screen.draw(shapes.circle(80, 11, 15))
     elif custom_symbol == "check":
-        screen.draw(shapes.circle(80, 39, 37 + pulse // 2).stroke(8))
-        screen.draw(shapes.line(54, 39, 73, 59, 10))
-        screen.draw(shapes.line(73, 59, 109, 21, 10))
+        screen.draw(shapes.circle(80, 42, 32).stroke(6))
+        screen.draw(shapes.line(57, 42, 73, 58, 8))
+        screen.draw(shapes.line(73, 58, 105, 25, 8))
     elif custom_symbol == "alert":
-        screen.draw(shapes.regular_polygon(80, 41, 43 + pulse // 3, 3))
-        screen.font = TITLE_FONT
-        screen.brush = custom_background
-        center_text("!", 29)
+        screen.draw(shapes.line(80, 8, 43, 73, 6))
+        screen.draw(shapes.line(43, 73, 117, 73, 6))
+        screen.draw(shapes.line(117, 73, 80, 8, 6))
+        screen.brush = WHITE
+        screen.draw(shapes.line(80, 31, 80, 52, 6))
+        screen.draw(shapes.circle(80, 63, 3))
     elif custom_symbol == "coffee":
-        screen.draw(shapes.rounded_rectangle(32, 20, 87, 55, 10))
-        screen.draw(shapes.arc(119, 47, 23, -90, 90).stroke(10))
-        screen.brush = custom_background
-        screen.draw(shapes.rounded_rectangle(42, 30, 67, 35, 5))
+        screen.draw(shapes.rounded_rectangle(43, 29, 68, 39, 6).stroke(6))
+        screen.draw(shapes.arc(112, 48, 18, -90, 90).stroke(6))
+        screen.draw(shapes.line(35, 75, 127, 75, 5))
         screen.brush = WHITE
         steam = int(io.ticks / 140) % 7
-        screen.draw(shapes.line(61, 22 - steam // 3, 67, 7 - steam // 3, 4))
-        screen.draw(shapes.line(86, 22 - ((steam + 3) % 7) // 3,
-                                92, 7 - ((steam + 3) % 7) // 3, 4))
+        screen.draw(shapes.line(61, 25 - steam // 3,
+                                67, 10 - steam // 3, 3))
+        other = (steam + 3) % 7
+        screen.draw(shapes.line(88, 25 - other // 3,
+                                94, 10 - other // 3, 3))
     elif custom_symbol == "door":
-        screen.draw(shapes.rounded_rectangle(51, 2, 58, 84, 7))
-        screen.brush = custom_background
-        screen.draw(shapes.rounded_rectangle(60, 11, 40, 75, 4))
-        screen.brush = custom_accent
-        screen.draw(shapes.circle(89, 47, 3 + pulse // 3))
+        screen.draw(shapes.rounded_rectangle(54, 6, 52, 72, 4).stroke(6))
+        screen.draw(shapes.line(65, 22, 95, 22, 4))
+        screen.draw(shapes.line(65, 61, 95, 61, 4))
+        screen.brush = WHITE
+        screen.draw(shapes.circle(92, 43, 3 + pulse // 4))
     elif custom_symbol == "code":
-        screen.draw(shapes.rounded_rectangle(7, 3, 146, 82, 9).stroke(8))
-        screen.draw(shapes.line(61, 21, 39, 43, 9))
-        screen.draw(shapes.line(39, 43, 61, 65, 9))
-        screen.draw(shapes.line(99, 21, 121, 43, 9))
-        screen.draw(shapes.line(121, 43, 99, 65, 9))
-        screen.draw(shapes.line(90, 14, 70, 72, 8))
+        screen.draw(shapes.rounded_rectangle(20, 10, 120, 68, 7).stroke(5))
+        screen.draw(shapes.line(62, 28, 44, 44, 7))
+        screen.draw(shapes.line(44, 44, 62, 60, 7))
+        screen.draw(shapes.line(98, 28, 116, 44, 7))
+        screen.draw(shapes.line(116, 44, 98, 60, 7))
+        screen.draw(shapes.line(88, 24, 72, 64, 6))
     elif custom_symbol == "bolt":
-        screen.draw(shapes.line(96, 3, 55, 44, 16))
-        screen.draw(shapes.line(55, 44, 82, 44, 16))
-        screen.draw(shapes.line(82, 44, 65, 80, 16))
-        screen.draw(shapes.line(65, 80, 108, 34, 16))
-        screen.draw(shapes.line(108, 34, 82, 34, 16))
-    else:
-        # Five connected strokes form a large, font-independent star.
-        points = ((80, 0), (92, 31), (130, 31), (100, 54), (111, 88),
-                  (80, 67), (49, 88), (60, 54), (30, 31), (68, 31), (80, 0))
+        points = ((91, 5), (55, 45), (76, 45), (65, 80),
+                  (108, 34), (86, 34), (91, 5))
         for index in range(len(points) - 1):
             start = points[index]
             end = points[index + 1]
-            screen.draw(shapes.line(start[0], start[1], end[0], end[1], 6))
+            screen.draw(shapes.line(start[0], start[1],
+                                    end[0], end[1], 6))
+    else:
+        points = ((80, 5), (91, 31), (120, 32), (98, 50), (105, 78),
+                  (80, 63), (55, 78), (62, 50), (40, 32), (69, 31), (80, 5))
+        for index in range(len(points) - 1):
+            start = points[index]
+            end = points[index + 1]
+            screen.draw(shapes.line(start[0], start[1], end[0], end[1], 5))
 
 
 def draw_address_overlay():
@@ -651,7 +654,7 @@ def draw_ui():
     elif current_status == "away":
         background, accent = AMBER_DARK, AMBER
     elif current_status == "lunch":
-        background, accent = CURRY_DARK, CURRY
+        background, accent = ORANGE_DARK, ORANGE
     elif current_status == "sleep":
         background, accent = BLUE_DARK, BLUE
     elif current_status == "custom":

@@ -13,7 +13,9 @@ from work_status_controller import (
     BadgeClient,
     STATUSES,
     badge_base_url,
+    darken_hex,
     normalize_config,
+    tint_hex,
 )
 
 
@@ -83,6 +85,14 @@ class ControllerTests(unittest.TestCase):
             badge_base_url("https://example.com")
         with self.assertRaises(ValueError):
             badge_base_url("")
+
+    def test_preview_background_matches_badge_color_treatment(self):
+        self.assertEqual(darken_hex("#1F6FEB"), "#06162F")
+        self.assertEqual(darken_hex("#FF9F43"), "#331F0D")
+
+    def test_glass_tint_blends_status_color_towards_white(self):
+        self.assertEqual(tint_hex("#000000"), "#E0E0E0")
+        self.assertEqual(tint_hex("#FFFFFF"), "#FFFFFF")
 
     def test_old_address_config_is_migrated_to_named_profile(self):
         config = normalize_config({"address": "192.168.1.42:8080"})

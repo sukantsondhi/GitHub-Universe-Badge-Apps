@@ -27,6 +27,10 @@ IP address in your router's DHCP settings.
 
 The connected badge's battery percentage appears in the controller header and
 refreshes automatically every minute. Charging state is shown beside it.
+The liquid-glass header also contains a live badge display: it renders the last
+status payload received from the badge, including its matching vector symbol,
+message, colour treatment and battery indicator. Each Quick Signal tile uses
+the same symbol language for fast visual selection.
 
 ## Use
 
@@ -37,12 +41,13 @@ six presets and the last custom status, clearing the note when a preset is
 selected. A bright border
 flashes when a remote update arrives.
 
-The large **Create Your Own Status** panel is the fifth option. Choose an emoji
-(star, heart, check, alert, coffee, door, coding or bolt), pick a colour, enter
-up to 24 characters, review the live preview, and select **Send My Custom
-Status**. Custom settings are saved in `badge_profiles.json` and restored the
-next time the controller opens. The badge renders a matching full-screen vector
-symbol because its pixel fonts do not contain Unicode emoji glyphs.
+Use the **Signal Lab** to build a custom status. Choose a vector symbol (star,
+heart, check, alert, coffee, door, code or bolt), pick a colour, enter up to 24
+characters, review the badge-accurate live preview, and select **Broadcast
+Custom Signal**. The preview uses the same darkened background treatment and
+symbol geometry as the badge, with no dependency on laptop emoji fonts. Custom
+settings are saved in `badge_profiles.json` and restored the next time the
+controller opens.
 
 The badge uses the full screen for the current symbol and text:
 
