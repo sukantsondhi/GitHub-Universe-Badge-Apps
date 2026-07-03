@@ -562,10 +562,9 @@ class WorkStatusController:
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         self.root.geometry(fitted_window_geometry(screen_width, screen_height))
-        self.root.minsize(
-            min(820, max(640, screen_width - 80)),
-            min(620, max(500, screen_height - 96)),
-        )
+        min_width = min(screen_width, max(480, screen_width - 120))
+        min_height = min(screen_height, max(360, screen_height - 140))
+        self.root.minsize(min_width, min_height)
         self.root.configure(bg="#eaf2f8")
 
         config = load_config()
@@ -607,6 +606,11 @@ class WorkStatusController:
         self.widget_buttons: dict[str, tk.Button] = {}
         self.widget_battery_var = tk.StringVar(value="--%")
         self._responsive_after: str | None = None
+        self.status_shell: tk.Frame | None = None
+        self.custom_shell: tk.Frame | None = None
+        self.status_grid: tk.Frame | None = None
+        self.status_tiles: dict[str, tk.Frame] = {}
+        self._status_columns = 0
         self.pairing_active = False
         self.result_queue: queue.Queue[tuple[str, object, str]] = queue.Queue()
         self.status_buttons: dict[str, tk.Button] = {}
@@ -983,6 +987,8 @@ class WorkStatusController:
         status_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         custom_shell, custom_card = card(self.content)
         custom_shell.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.status_shell = status_shell
+        self.custom_shell = custom_shell
 
         note_head = tk.Frame(status_card, bg=panel)
         note_head.pack(fill="x", padx=16, pady=(12, 0))
@@ -1016,6 +1022,7 @@ class WorkStatusController:
 
         grid = tk.Frame(status_card, bg=panel)
         grid.pack(fill="both", expand=True, padx=11, pady=(0, 11))
+        self.status_grid = grid
 
         def tile_hover(button, tile, icon, active):
             tile_color = button._hover_bg if active else button._rest_bg
@@ -1104,10 +1111,8 @@ class WorkStatusController:
                 pady=5,
             )
             self.status_buttons[status] = button
-        grid.columnconfigure(0, weight=1)
-        grid.columnconfigure(1, weight=1)
-        for row in range(3):
-            grid.rowconfigure(row, weight=1)
+            self.status_tiles[status] = tile
+        self._set_status_grid_columns(2)
 
         self.custom_head = tk.Frame(custom_card, bg=panel)
         self.custom_head.pack(fill="x", padx=16, pady=(12, 8))
@@ -2476,6 +2481,33 @@ class WorkStatusController:
             "keys": self.device_keys,
         })
 
+    def _set_status_grid_columns(self, columns: int) -> None:
+        grid = self.status_grid
+        if grid is None or not self.status_tiles:
+            return
+        columns = max(1, min(columns, len(self.status_tiles)))
+        if columns == self._status_columns:
+            return
+        tiles = [self.status_tiles[status] for status in STATUSES]
+        for tile in tiles:
+            tile.grid_forget()
+        for index, tile in enumerate(tiles):
+            tile.grid(
+                row=index // columns,
+                column=index % columns,
+                sticky="nsew",
+                padx=5,
+                pady=5,
+            )
+        max_columns = len(tiles)
+        max_rows = len(tiles)
+        for column in range(max_columns):
+            grid.columnconfigure(column, weight=1 if column < columns else 0)
+        rows = (len(tiles) + columns - 1) // columns
+        for row in range(max_rows):
+            grid.rowconfigure(row, weight=1 if row < rows else 0)
+        self._status_columns = columns
+
     def _on_root_configure(self, event) -> None:
         if event.widget is not self.root:
             return
@@ -2493,6 +2525,7 @@ class WorkStatusController:
         width = self.root.winfo_width()
         height = self.root.winfo_height()
         compact = height < 780
+        narrow = width < 1050
         wide_header = width >= 1000 and not compact
         outer_pad = 14 if width < 1000 else 22
 
@@ -2510,6 +2543,33 @@ class WorkStatusController:
             padx=outer_pad,
             pady=(5, 5) if compact else (8, 10),
         )
+        if (
+            self.status_shell is not None
+            and self.custom_shell is not None
+        ):
+            if narrow:
+                self.content.columnconfigure(0, weight=1, uniform="")
+                self.content.columnconfigure(1, weight=0, uniform="")
+                self.content.rowconfigure(0, weight=3)
+                self.content.rowconfigure(1, weight=2)
+                self.status_shell.grid_configure(
+                    row=0, column=0, padx=0, pady=(0, 6),
+                )
+                self.custom_shell.grid_configure(
+                    row=1, column=0, padx=0, pady=(6, 0),
+                )
+            else:
+                self.content.columnconfigure(0, weight=11, uniform="content")
+                self.content.columnconfigure(1, weight=9, uniform="content")
+                self.content.rowconfigure(0, weight=1)
+                self.content.rowconfigure(1, weight=0)
+                self.status_shell.grid_configure(
+                    row=0, column=0, padx=(0, 6), pady=0,
+                )
+                self.custom_shell.grid_configure(
+                    row=0, column=1, padx=(6, 0), pady=0,
+                )
+        self._set_status_grid_columns(3 if compact else 2)
 
         self.hero.itemconfigure(
             "wide_header",
