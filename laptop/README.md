@@ -33,38 +33,35 @@ per-badge authentication key in
 has the same authority as the paired laptop. The badge remembers up to eight
 approved controllers across restarts.
 
-The connected badge's battery percentage appears in the controller header and
-refreshes automatically every minute. Charging state is shown beside it.
-Use the **Dark**/**Light** control in the header to switch the controller
-theme. The selection is saved with the badge profiles.
-The liquid-glass header also contains a live badge display: it renders the last
-status payload received from the badge, including its matching vector symbol,
-message, colour treatment and battery indicator. Each Quick Signal tile uses
-the same symbol language for fast visual selection.
+The redesigned dashboard keeps the badge connection in a dedicated sidebar
+and your status controls in the main workspace. The sidebar shows battery,
+connection state, the active status and a preview of the last confirmed update.
+After connecting, setup fields fold away. Select **Edit / add badge** to manage
+profiles again.
 
-The controller sizes itself to the current display. Select **Full Screen** or
-press **F11** for a borderless responsive view; press **Escape** to leave it.
-In full screen, the layout adapts for narrow, wide, and short displays so all
-Quick Signal statuses remain visible, including the connection, battery, active
-signal and live preview header telemetry. Use **Show Custom** / **Hide Custom**
-to open or close the custom signal panel when needed.
-Select **Desktop Widget** (or press **Ctrl+Shift+W**) for a compact,
-always-on-top status controller. **Open Dashboard** restores the full window.
+Use **Quick statuses** for the six presets, or **Create your own** for the custom
+editor. These are separate views so neither is squeezed into a narrow column.
+The selected preset gets an accent border. Connection feedback stays visible
+along the bottom of the window.
+
+Select **Dark theme** / **Light theme** to switch appearance; your selection and
+drafts are preserved. **Full screen** or **F11** expands the workspace, and
+**Escape** returns to the window. **Mini controller** (or **Ctrl+Shift+W**) opens
+the always-on-top controller; **Open Dashboard** restores the full window.
 
 ## Use
 
 Enter an optional short note, then press **Available**, **In a meeting**,
-**Focus**, **Away**, **Lunch**, or **Sleep**. Lunch displays an animated curry
-bowl. The badge changes immediately. Button A on the badge cycles through the
+**Focus mode**, **Away**, **Lunch break**, or **Offline**. Lunch displays an animated curry
+bowl. The badge changes after it confirms the update. Offline is a display status; it keeps Wi-Fi available. Button A on the badge cycles through the
 six presets and the last custom status, clearing the note when a preset is
 selected. A bright border
 flashes briefly when a remote update arrives; the status screen no longer has
 a permanent white border.
 
-Use the **Signal Lab** to build a custom status. Choose a vector symbol (star,
+Use **Create your own** to build a custom status. Choose a vector symbol (star,
 heart, check, alert, coffee, door, code or bolt), pick a colour, enter up to 24
-characters, review the badge-accurate live preview, and select **Broadcast
-Custom Signal**. The preview uses the same darkened background treatment and
+characters, review the badge-accurate live preview, and select **Send to badge**. The preview uses the same darkened background treatment and
 symbol geometry as the badge, with no dependency on laptop emoji fonts. Custom
 settings are saved in `badge_profiles.json` and restored the next time the
 controller opens.
@@ -139,3 +136,25 @@ Custom requests use:
 The badge has no onboard speaker or buzzer, so it cannot produce an audible
 notification without extra hardware. A small active buzzer can be added using
 the exposed GPIO pads; the built-in app uses a visual flash instead.
+
+## UI behaviour
+
+Connection controls lock while a request is running, so a response cannot be
+shown against a different badge. Theme changes preserve draft text. Battery
+polling starts only after a successful connection.
+
+Select **Quick statuses** to leave the custom editor. On shorter displays,
+its preview becomes a compact message strip to keep the Send button accessible.
+The sidebar preview remains visible after connecting, when setup fields fold away.
+
+The badge shows connection state separately from the note. Long text is fitted
+to the screen, and presets without notes show button hints. Press C again to
+close the address screen early. **Offline** does not power the badge off;
+double-press B for hardware sleep.
+
+Run regression checks with `python -m unittest discover -s laptop/tests`.
+The desktop layout checks require a working Tk installation and desktop session.
+
+![Redesigned desktop dashboard](../docs/images/laptop-controller.png)
+
+![Custom status editor](../docs/images/laptop-custom.png)

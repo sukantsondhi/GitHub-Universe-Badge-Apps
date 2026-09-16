@@ -34,7 +34,7 @@ STATUSES = {
     "focus": ("Focus mode", "Deep work in progress", "#b878ff"),
     "away": ("Away", "Back soon", "#ffb848"),
     "lunch": ("Lunch break", "Refuelling", "#ff9f43"),
-    "sleep": ("Offline", "Sleeping", "#58a6ff"),
+    "sleep": ("Offline", "Still reachable by laptop", "#58a6ff"),
 }
 BADGE_LABELS = {
     "available": "I'M FREE",
@@ -42,7 +42,7 @@ BADGE_LABELS = {
     "focus": "DEEP WORK",
     "away": "BACK SOON",
     "lunch": "LUNCH BREAK",
-    "sleep": "SLEEPING",
+    "sleep": "OFFLINE",
 }
 CUSTOM_SYMBOLS = {
     "Star / highlight": "star",
@@ -161,7 +161,7 @@ def response_auth_message(nonce: str, body: bytes) -> bytes:
 
 def fitted_window_geometry(screen_width: int, screen_height: int) -> str:
     """Fit the dashboard to the display while leaving room for OS chrome."""
-    width = min(1080, max(720, screen_width - 80))
+    width = min(1180, max(820, screen_width - 80))
     height = min(830, max(500, screen_height - 96))
     width = min(width, screen_width)
     height = min(height, screen_height)
@@ -634,1393 +634,226 @@ class WorkStatusController:
             self.root.after(250, self.refresh_status)
 
     def _build_ui(self) -> None:
-        palette = THEMES[self.theme_name]
-        bg = palette["bg"]
-        panel = palette["panel"]
-        panel_raised = palette["raised"]
-        field = palette["field"]
-        border = palette["border"]
-        border_hot = palette["border_hot"]
-        text = palette["text"]
-        muted = palette["muted"]
-        cyan = palette["cyan"]
-        violet = palette["violet"]
-        self.root.configure(bg=bg)
-
-        style = ttk.Style()
+        p = THEMES[self.theme_name]
+        self.root.configure(bg=p["bg"])
+        style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure(
-            "Dark.TEntry",
-            fieldbackground=field,
-            foreground=text,
-            insertcolor=text,
-            bordercolor=border,
-            lightcolor=field,
-            darkcolor=border,
-            padding=10,
-        )
-        style.map(
-            "Dark.TEntry",
-            bordercolor=[("focus", border_hot)],
-            lightcolor=[("focus", border_hot)],
-        )
-        style.configure(
-            "Dark.TCombobox",
-            fieldbackground=field,
-            background=panel_raised,
-            foreground=text,
-            arrowcolor=cyan,
-            bordercolor=border,
-            lightcolor="#e8f3f9",
-            darkcolor=border,
-            padding=10,
-        )
-        style.map(
-            "Dark.TCombobox",
-            fieldbackground=[("readonly", field)],
-            foreground=[("readonly", text)],
-            selectbackground=[("readonly", field)],
-            selectforeground=[("readonly", text)],
-        )
+        for name in ("Dark.TEntry", "Dark.TCombobox"):
+            style.configure(name, fieldbackground=p["field"], background=p["raised"],
+                            foreground=p["text"], arrowcolor=p["cyan"],
+                            bordercolor=p["border"], lightcolor=p["border"],
+                            darkcolor=p["border"], padding=7)
+            style.map(name, fieldbackground=[("readonly", p["field"])],
+                      foreground=[("readonly", p["text"])],
+                      bordercolor=[("focus", p["cyan"])])
 
-        def card(parent):
-            shell = tk.Frame(
-                parent,
-                bg=border,
-                highlightbackground=border,
-                highlightthickness=1,
-            )
-            body = tk.Frame(
-                shell,
-                bg=panel,
-                highlightbackground=border,
-                highlightthickness=1,
-            )
-            body.pack(fill="both", expand=True, padx=2, pady=2)
-            return shell, body
+        def label(parent, text, size=10, color=None, bold=False):
+            return tk.Label(parent, text=text, bg=parent["bg"],
+                            fg=color or p["text"], anchor="w",
+                            font=("Segoe UI Semibold" if bold else "Segoe UI", size))
 
-        def small_button(
-            parent,
-            label,
-            command,
-            fg=text,
-            button_bg=panel_raised,
-        ):
-            return tk.Button(
-                parent,
-                text=label,
-                command=command,
-                bg=button_bg,
-                fg=fg,
-                activebackground=palette["active"],
-                activeforeground=text,
-                relief="flat",
-                bd=0,
-                padx=13,
-                highlightthickness=1,
-                highlightbackground=border,
-                font=("Segoe UI Semibold", 9),
-                cursor="hand2",
-            )
+        def button(parent, text, command, primary=False):
+            return tk.Button(parent, text=text, command=command,
+                             bg=p["cyan"] if primary else p["raised"],
+                             fg=("#07131d" if self.theme_name == "dark" else "#ffffff") if primary else p["text"],
+                             activebackground=p["active"], activeforeground=p["text"],
+                             disabledforeground=p["muted"], relief="flat", bd=0,
+                             padx=12, pady=7, cursor="hand2",
+                             highlightthickness=1, highlightbackground=p["border"],
+                             highlightcolor=p["cyan"], font=("Segoe UI Semibold", 9))
 
-        # Command-deck header with a restrained grid and live telemetry.
-        self.hero = tk.Canvas(
-            self.root,
-            height=154,
-            bg=panel,
-            highlightthickness=0,
-        )
-        self.hero.pack(fill="x", padx=22, pady=(12, 8))
-        self.hero.create_rectangle(0, 0, 1100, 154, fill=panel, outline="")
-        for x in range(0, 1100, 36):
-            self.hero.create_line(x, 0, x, 154, fill=border)
-        for y in range(10, 154, 27):
-            self.hero.create_line(0, y, 1100, y, fill=border)
-        self.hero.create_polygon(
-            390, 0, 580, 0, 485, 154, 295, 154,
-            fill=palette["raised"], outline="",
-        )
-        self.hero.create_oval(
-            250, -170, 610, 190, fill=panel, outline="",
-        )
-        self.hero.create_oval(
-            360, -180, 650, 110, fill=palette["raised"], outline="",
-        )
-        self.hero.create_line(0, 153, 1100, 153, fill=border_hot, width=2)
-        self.hero.create_rectangle(
-            18, 16, 111, 36, fill=palette["raised"], outline=border,
-        )
-        self.hero.create_text(
-            64, 26, text="TUFTY // LINK", fill=cyan,
-            font=("Consolas", 8, "bold"),
-        )
-        self.hero.create_text(
-            18, 67, text="STATUS COMMAND", anchor="w", fill=text,
-            font=("Segoe UI Semibold", 24),
-        )
-        self.hero_subtitle = self.hero.create_text(
-            19, 95,
-            text="Broadcast your workspace signal",
-            anchor="w",
-            fill=muted,
-            font=("Segoe UI", 10),
-        )
-        self.current_badge = self.hero.create_text(
-            19, 120,
-            text=self.current_var.get(),
-            anchor="w",
-            fill=cyan,
-            font=("Consolas", 8, "bold"),
-        )
-        self.theme_button = tk.Button(
-            self.hero,
-            text="☾  DARK" if self.theme_name == "light" else "☀  LIGHT",
-            command=self.toggle_theme,
-            bg=panel_raised,
-            fg=text,
-            activebackground=palette["active"],
-            activeforeground=text,
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=border,
-            font=("Segoe UI Semibold", 8),
-            cursor="hand2",
-        )
-        self.theme_button.place(x=282, y=109, width=92, height=27)
+        # A quiet application bar, separate from the working area.
+        self.topbar = tk.Frame(self.root, bg=p["panel"], padx=22, pady=12)
+        self.topbar.pack(fill="x")
+        label(self.topbar, "WS", 18, p["cyan"], True).pack(side="left", padx=(0, 10))
+        brand = tk.Frame(self.topbar, bg=p["panel"])
+        brand.pack(side="left")
+        label(brand, "Work status", 18, bold=True).pack(anchor="w")
+        label(brand, "Your space. Your signal.", 9, p["muted"]).pack(anchor="w")
+        self.widget_button = button(self.topbar, "Mini controller", self.open_widget)
+        self.widget_button.pack(side="right", padx=(8, 0))
+        self.fullscreen_button = button(self.topbar, "Full screen", self.toggle_fullscreen)
+        self.fullscreen_button.pack(side="right", padx=(8, 0))
+        self.theme_button = button(self.topbar,
+                                  "Dark theme" if self.theme_name == "light" else "Light theme",
+                                  self.toggle_theme)
+        self.theme_button.pack(side="right")
 
-        def chip(x1, x2, title):
-            self.hero.create_rectangle(
-                x1 + 2, 24, x2 + 2, 100, fill=border, outline="",
-                tags="wide_header",
-            )
-            self.hero.create_rectangle(
-                x1, 22, x2, 98, fill=panel_raised, outline=border, width=1,
-                tags="wide_header",
-            )
-            self.hero.create_line(
-                x1 + 1, 23, x2 - 1, 23, fill=border_hot,
-                tags="wide_header",
-            )
-            self.hero.create_line(
-                x1 + 9, 89, x1 + 27, 89, fill=cyan, width=2,
-                tags="wide_header",
-            )
-            self.hero.create_text(
-                x1 + 13, 42,
-                text=title,
-                anchor="w",
-                fill=muted,
-                font=("Consolas", 7, "bold"),
-                tags="wide_header",
-            )
+        # Feedback gets a reserved row and can never be pushed off-screen.
+        self.activity_shell = tk.Frame(self.root, bg=p["panel"], padx=20, pady=9)
+        self.activity_shell.pack(side="bottom", fill="x")
+        self.activity_dot = label(self.activity_shell, "\u25cf", 10, p["muted"])
+        self.activity_dot.pack(side="left", padx=(0, 9))
+        self.connection_label = tk.Label(
+            self.activity_shell, textvariable=self.connection_var, bg=p["panel"],
+            fg=p["muted"], anchor="w", justify="left", font=("Segoe UI", 10))
+        self.connection_label.pack(side="left", fill="x", expand=True)
 
-        chip(402, 510, "LINK STATE")
-        self.connection_dot = self.hero.create_oval(
-            416, 59, 426, 69, fill="#6e7f93", outline="",
-            tags="wide_header",
-        )
-        self.connection_state_display = self.hero.create_text(
-            434, 64,
-            text="OFFLINE",
-            anchor="w",
-            fill="#a9b8c9",
-            font=("Consolas", 9, "bold"),
-            tags="wide_header",
-        )
-        chip(520, 628, "BADGE POWER")
-        self.battery_display = self.hero.create_text(
-            534, 64,
-            text="--%",
-            anchor="w",
-            fill=muted,
-            font=("Consolas", 13, "bold"),
-            tags="wide_header",
-        )
-        chip(638, 756, "ACTIVE SIGNAL")
-        self.current_status_display = self.hero.create_text(
-            652, 64,
-            text="—",
-            anchor="w",
-            fill=text,
-            font=("Segoe UI Semibold", 10),
-            tags="wide_header",
-        )
-
-        self.preview_shell = tk.Frame(
-            self.hero,
-            bg=border,
-            highlightbackground=border,
-            highlightthickness=1,
-        )
-        self.preview_shell.place(
-            relx=1.0, x=-238, y=8, width=224, height=138,
-        )
-        self.current_badge_preview = tk.Canvas(
-            self.preview_shell,
-            bg="#080a0f",
-            highlightthickness=0,
-        )
-        self.current_badge_preview.pack(
-            fill="both", expand=True, padx=4, pady=4,
-        )
-        self.current_badge_preview.bind(
-            "<Configure>",
-            lambda _event: self._update_current_badge_preview(),
-        )
-        self._update_current_badge_preview()
-
-        self.fullscreen_button = tk.Button(
-            self.hero,
-            text="FULL SCREEN",
-            command=self.toggle_fullscreen,
-            bg=panel_raised,
-            fg=text,
-            activebackground=palette["active"],
-            activeforeground=text,
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=border,
-            font=("Segoe UI Semibold", 8),
-            cursor="hand2",
-        )
-        self.fullscreen_button.place(x=384, y=109, width=104, height=27)
-        self.widget_button = tk.Button(
-            self.hero,
-            text="DESKTOP WIDGET",
-            command=self.open_widget,
-            bg=panel_raised,
-            fg=cyan,
-            activebackground=palette["active"],
-            activeforeground=text,
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=border,
-            font=("Segoe UI Semibold", 8),
-            cursor="hand2",
-        )
-        self.widget_button.place(x=498, y=109, width=120, height=27)
-
-        # Connection bay.
-        self.profile_shell, profile = card(self.root)
-        self.profile_shell.pack(fill="x", padx=22, pady=(0, 12))
-        heading = tk.Frame(profile, bg=panel)
-        heading.pack(fill="x", padx=16, pady=(10, 6))
-        tk.Label(
-            heading,
-            text="01  BADGE UPLINK",
-            bg=panel,
-            fg=text,
-            font=("Segoe UI Semibold", 12),
-        ).pack(side="left")
-        tk.Label(
-            heading,
-            text="PRESS C ON BADGE FOR ADDRESS",
-            bg=panel,
-            fg=cyan,
-            font=("Consolas", 8, "bold"),
-        ).pack(side="right")
-
-        selector = tk.Frame(profile, bg=panel)
-        selector.pack(fill="x", padx=16, pady=(0, 7))
-        self.device_picker = ttk.Combobox(
-            selector,
-            textvariable=self.device_var,
-            values=sorted(self.profiles),
-            state="readonly",
-            style="Dark.TCombobox",
-            font=("Segoe UI", 10),
-        )
-        self.device_picker.pack(side="left", fill="x", expand=True)
+        self.workspace = tk.Frame(self.root, bg=p["bg"])
+        self.workspace.pack(fill="both", expand=True, padx=20, pady=18)
+        self.sidebar = tk.Frame(self.workspace, bg=p["panel"], width=258,
+                                highlightthickness=1, highlightbackground=p["border"])
+        self.sidebar.pack(side="left", fill="y", padx=(0, 20))
+        self.sidebar.pack_propagate(False)
+        self.profile_shell = tk.Frame(self.sidebar, bg=p["panel"], padx=16, pady=14)
+        self.profile_shell.pack(fill="x")
+        label(self.profile_shell, "YOUR BADGE", 9, p["cyan"], True).pack(anchor="w", pady=(0, 10))
+        self.device_picker = ttk.Combobox(self.profile_shell, textvariable=self.device_var,
+            values=sorted(self.profiles), state="readonly", style="Dark.TCombobox", width=18)
+        self.device_picker.pack(fill="x")
         self.device_picker.bind("<<ComboboxSelected>>", self._select_profile)
-        self.new_badge_button = small_button(
-            selector, "+ NEW BADGE", self.new_profile, fg=cyan,
-        )
-        self.new_badge_button.pack(side="left", padx=(8, 0), ipady=4)
-        self.refresh_button = small_button(
-            selector,
-            "CONNECT",
-            self.refresh_status,
-            fg="#031019",
-            button_bg=cyan,
-        )
-        self.refresh_button.pack(side="left", padx=(8, 0), ipady=4)
+        self.profile_details_button = button(self.profile_shell, "Edit badge details", self.toggle_profile_details)
+        self.profile_details_button.pack(fill="x", pady=(8, 0))
+        self.profile_editor = tk.Frame(self.profile_shell, bg=p["panel"])
+        self.profile_editor.pack(fill="x")
+        self.profile_details_open = getattr(self, "profile_details_open", not bool(self.profiles))
+        label(self.profile_editor, "Badge name", 9, p["muted"]).pack(anchor="w", pady=(10, 3))
+        self.profile_name_entry = ttk.Entry(self.profile_editor, textvariable=self.profile_name_var,
+                                            style="Dark.TEntry")
+        self.profile_name_entry.pack(fill="x")
+        address_heading = tk.Frame(self.profile_editor, bg=p["panel"])
+        address_heading.pack(fill="x", pady=(8, 3))
+        label(address_heading, "Network address", 9, p["muted"]).pack(side="left")
+        self.visibility_button = button(address_heading,
+            "Hide IP" if self.address_visible else "Show IP", self.toggle_address_visibility)
+        self.visibility_button.configure(pady=1, padx=5, font=("Segoe UI", 8))
+        self.visibility_button.pack(side="right")
+        self.address_entry = ttk.Entry(self.profile_editor, textvariable=self.address_var,
+            style="Dark.TEntry", show="" if self.address_visible else "\u2022")
+        self.address_entry.pack(fill="x")
+        self.address_entry.bind("<Return>", lambda _event: self.save_profile())
+        label(self.profile_editor, "Press C on your badge to find it.", 8, p["muted"]).pack(anchor="w", pady=(4, 9))
+        actions = tk.Frame(self.profile_editor, bg=p["panel"])
+        actions.pack(fill="x")
+        self.new_badge_button = button(actions, "New", self.new_profile)
+        self.save_button = button(actions, "Save", self.save_profile)
+        self.delete_button = button(actions, "Forget", self.forget_profile)
+        for item in (self.new_badge_button, self.save_button, self.delete_button):
+            item.configure(padx=8)
+            item.pack(side="left", expand=True, fill="x", padx=2)
+        self.refresh_button = button(self.profile_shell, "Connect to badge", self.refresh_status, True)
+        self.refresh_button.pack(fill="x", pady=(10, 0))
 
-        editor = tk.Frame(profile, bg=panel)
-        editor.pack(fill="x", padx=16, pady=(0, 10))
-        ttk.Entry(
-            editor,
-            textvariable=self.profile_name_var,
-            style="Dark.TEntry",
-            font=("Segoe UI", 10),
-        ).pack(side="left", fill="x", expand=True)
-        self.address_entry = ttk.Entry(
-            editor,
-            textvariable=self.address_var,
-            style="Dark.TEntry",
-            font=("Consolas", 10),
-            show="\u2022",
-        )
-        self.address_entry.pack(
-            side="left", fill="x", expand=True, padx=(8, 0),
-        )
-        self.address_entry.bind(
-            "<Return>", lambda _event: self.save_profile(),
-        )
-        self.visibility_button = small_button(
-            editor, "SHOW IP", self.toggle_address_visibility, fg=cyan,
-        )
-        self.visibility_button.pack(side="left", padx=(6, 0), ipady=4)
-        self.save_button = small_button(editor, "SAVE", self.save_profile)
-        self.save_button.pack(side="left", padx=(8, 0), ipady=4)
-        self.delete_button = small_button(
-            editor, "FORGET", self.forget_profile, fg="#ff7185",
-        )
-        self.delete_button.pack(side="left", padx=(6, 0), ipady=4)
+        self.hero = tk.Canvas(self.sidebar, height=111, bg=p["panel"], highlightthickness=0)
+        self.hero.pack(fill="x", padx=16)
+        self.hero.create_line(0, 1, 226, 1, fill=p["border"])
+        self.connection_dot = self.hero.create_oval(0, 17, 7, 24, fill=p["muted"], outline="")
+        self.connection_state_display = self.hero.create_text(15, 21, anchor="w", text="NOT CONNECTED",
+            fill=p["muted"], font=("Segoe UI Semibold", 9))
+        self.battery_display = self.hero.create_text(0, 44, anchor="w", text="Battery: --",
+            fill=p["muted"], font=("Segoe UI", 9))
+        self.current_status_display = self.hero.create_text(0, 69, anchor="w", text="No status yet",
+            fill=p["text"], font=("Segoe UI Semibold", 13), width=218)
+        self.current_badge = self.hero.create_text(0, 97, anchor="w", text=self.current_var.get(),
+            fill=p["muted"], font=("Segoe UI", 8), width=218)
+        self.preview_shell = tk.Frame(self.sidebar, bg=p["panel"], padx=16)
+        self.preview_shell.pack(fill="x", pady=(5, 12))
+        label(self.preview_shell, "ON YOUR BADGE", 8, p["muted"], True).pack(anchor="w", pady=(0, 7))
+        self.current_badge_preview = tk.Canvas(self.preview_shell, height=138,
+            bg=p["raised"], highlightthickness=1, highlightbackground=p["border"])
+        self.current_badge_preview.pack(fill="x")
+        self.current_badge_preview.bind("<Configure>", lambda _event: self._update_current_badge_preview())
 
-        # Preset signals and custom composer.
-        self.content = tk.Frame(self.root, bg=bg)
-        self.content.pack(fill="both", expand=True, padx=22)
-        self.content.columnconfigure(0, weight=11, uniform="content")
-        self.content.columnconfigure(1, weight=9, uniform="content")
+        self.main_panel = tk.Frame(self.workspace, bg=p["bg"])
+        self.main_panel.pack(side="left", fill="both", expand=True)
+        label(self.main_panel, "Make room for your best work.", 21, bold=True).pack(anchor="w")
+        self.page_subtitle = label(self.main_panel, "Choose a status to update your badge.", 10, p["muted"])
+        self.page_subtitle.pack(anchor="w", pady=(4, 16))
+        tabs = tk.Frame(self.main_panel, bg=p["bg"])
+        tabs.pack(fill="x", pady=(0, 15))
+        self.presets_tab = button(tabs, "Quick statuses", lambda: self._show_composer(False))
+        self.presets_tab.pack(side="left", padx=(0, 8))
+        self.custom_toggle_button = button(tabs, "Create your own", lambda: self._show_composer(True))
+        self.custom_toggle_button.pack(side="left")
+        self.content = tk.Frame(self.main_panel, bg=p["bg"])
+        self.content.pack(fill="both", expand=True)
+        self.content.columnconfigure(0, weight=1)
         self.content.rowconfigure(0, weight=1)
-        status_shell, status_card = card(self.content)
-        status_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        custom_shell, custom_card = card(self.content)
-        custom_shell.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        self.status_shell = status_shell
-        self.custom_shell = custom_shell
 
-        note_head = tk.Frame(status_card, bg=panel)
-        note_head.pack(fill="x", padx=16, pady=(12, 0))
-        tk.Label(
-            note_head,
-            text="02  QUICK SIGNALS",
-            bg=panel,
-            fg=text,
-            font=("Segoe UI Semibold", 12),
-        ).pack(side="left")
-        tk.Label(
-            note_head,
-            textvariable=self.note_count_var,
-            bg=panel,
-            fg=muted,
-            font=("Consolas", 9),
-        ).pack(side="right")
-        tk.Label(
-            status_card,
-            text="Optional transmission note",
-            bg=panel,
-            fg=muted,
-            font=("Segoe UI", 8),
-        ).pack(anchor="w", padx=16, pady=(2, 0))
-        ttk.Entry(
-            status_card,
-            textvariable=self.note_var,
-            style="Dark.TEntry",
-            font=("Segoe UI", 11),
-        ).pack(fill="x", padx=16, pady=(7, 9))
-        quick_actions = tk.Frame(status_card, bg=panel)
-        quick_actions.pack(fill="x", padx=16, pady=(0, 7))
-        self.custom_toggle_button = tk.Button(
-            quick_actions,
-            text="SHOW CUSTOM",
-            command=self.toggle_custom_panel,
-            bg=panel_raised,
-            fg=violet,
-            activebackground=palette["active"],
-            activeforeground=text,
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=border,
-            font=("Segoe UI Semibold", 9),
-            cursor="hand2",
-            padx=12,
-        )
-        self.custom_toggle_button.pack(side="right", ipady=4)
-
-        grid = tk.Frame(status_card, bg=panel)
-        grid.pack(fill="both", expand=True, padx=11, pady=(0, 11))
-        self.status_grid = grid
-
-        def tile_hover(button, tile, icon, active):
-            tile_color = button._hover_bg if active else button._rest_bg
-            button.configure(bg=tile_color)
-            tile.configure(bg=tile_color)
-            icon.configure(bg=tile_color)
-
-        for index, (status, details) in enumerate(STATUSES.items()):
-            label, subtitle, color = details
-            if self.theme_name == "dark":
-                tile_bg = darken_hex(color, 7)
-                hover_bg = darken_hex(color, 5)
-            else:
-                tile_bg = tint_hex(color, 0.91)
-                hover_bg = tint_hex(color, 0.82)
-            tile = tk.Frame(
-                grid,
-                bg=tile_bg,
-                highlightbackground=color,
-                highlightthickness=1,
-            )
-            icon = tk.Canvas(
-                tile,
-                width=54,
-                height=62,
-                bg=tile_bg,
-                highlightthickness=0,
-                cursor="hand2",
-            )
-            icon.pack(side="left", padx=(6, 0), fill="y")
-            self._draw_preset_symbol(
-                icon, status, 27, 31, 0.36, color, tile_bg,
-            )
-            button = tk.Button(
-                tile,
-                text="%s\n%s" % (label.upper(), subtitle),
-                command=lambda selected=status: self.send_status(selected),
-                bg=tile_bg,
-                fg=text,
-                activebackground=hover_bg,
-                activeforeground=text,
-                disabledforeground="#92a2b2",
-                relief="flat",
-                bd=0,
-                font=("Segoe UI Semibold", 10),
-                cursor="hand2",
-                justify="left",
-                anchor="w",
-                padx=8,
-                highlightthickness=0,
-            )
-            button._rest_bg = tile_bg
-            button._hover_bg = hover_bg
-            button._tile_frame = tile
-            button._icon_canvas = icon
-            button.pack(side="left", fill="both", expand=True)
-            button.bind(
-                "<Enter>",
-                lambda _event, item=button, frame=tile, glyph=icon:
-                tile_hover(
-                    item, frame, glyph, True,
-                ),
-            )
-            button.bind(
-                "<Leave>",
-                lambda _event, item=button: self._restore_button_border(item),
-            )
-            tile.bind(
-                "<Enter>",
-                lambda _event, item=button, frame=tile, glyph=icon:
-                tile_hover(item, frame, glyph, True),
-            )
-            tile.bind(
-                "<Leave>",
-                lambda _event, item=button: self._restore_button_border(item),
-            )
-            icon.bind(
-                "<Button-1>",
-                lambda _event, selected=status: self.send_status(selected),
-            )
-            tile.grid(
-                row=index // 2,
-                column=index % 2,
-                sticky="nsew",
-                padx=5,
-                pady=5,
-            )
-            self.status_buttons[status] = button
+        self.status_shell = tk.Frame(self.content, bg=p["bg"])
+        self.status_shell.grid(row=0, column=0, sticky="nsew")
+        note_header = tk.Frame(self.status_shell, bg=p["bg"])
+        note_header.pack(fill="x")
+        label(note_header, "Add a short note", 10, bold=True).pack(side="left")
+        tk.Label(note_header, textvariable=self.note_count_var, bg=p["bg"], fg=p["muted"],
+                 font=("Segoe UI", 9)).pack(side="right")
+        self.note_entry = ttk.Entry(self.status_shell, textvariable=self.note_var,
+                                   style="Dark.TEntry", font=("Segoe UI", 11))
+        self.note_entry.pack(fill="x", pady=(6, 4))
+        label(self.status_shell, "Optional - included with your next status", 9, p["muted"]).pack(anchor="w", pady=(0, 10))
+        self.status_grid = tk.Frame(self.status_shell, bg=p["bg"])
+        self.status_grid.pack(fill="both", expand=True)
+        for status, (title, subtitle, color) in STATUSES.items():
+            tile = tk.Frame(self.status_grid, bg=p["raised"],
+                            highlightthickness=1, highlightbackground=p["border"])
+            icon = tk.Canvas(tile, width=62, height=60, bg=p["raised"], highlightthickness=0)
+            icon.pack(side="left", padx=(6, 0))
+            icon_bg = darken_hex(color, 7)
+            icon.create_oval(5, 4, 57, 56, fill=icon_bg, outline="")
+            self._draw_preset_symbol(icon, status, 31, 30, 0.31, color, icon_bg)
+            control = button(tile, title + "\n" + subtitle, lambda chosen=status: self.send_status(chosen))
+            control.configure(anchor="w", justify="left", highlightthickness=0,
+                              font=("Segoe UI Semibold", 11), padx=8)
+            control.pack(side="left", fill="both", expand=True)
+            control._rest_bg = p["raised"]
+            control._hover_bg = p["active"]
+            control._tile_frame = tile
+            control._icon_canvas = icon
+            icon.bind("<Button-1>", lambda _event, item=control: item.invoke())
+            self.status_buttons[status] = control
             self.status_tiles[status] = tile
         self._set_status_grid_columns(2)
 
-        self.custom_head = tk.Frame(custom_card, bg=panel)
-        self.custom_head.pack(fill="x", padx=16, pady=(12, 8))
-        tk.Label(
-            self.custom_head,
-            text="03  SIGNAL LAB",
-            bg=panel,
-            fg=text,
-            font=("Segoe UI Semibold", 12),
-        ).pack(anchor="w")
-        tk.Label(
-            self.custom_head,
-            text="Badge-accurate vector preview",
-            bg=panel,
-            fg=muted,
-            font=("Segoe UI", 8),
-        ).pack(anchor="w", pady=(2, 0))
-
-        self.custom_body = tk.Frame(custom_card, bg=panel)
-        self.custom_body.pack(
-            fill="both", expand=True, padx=15, pady=(0, 14),
-        )
-        self.custom_preview = tk.Canvas(
-            self.custom_body,
-            height=118,
-            bg=darken_hex(self.custom_color),
-            highlightbackground=border_hot,
-            highlightthickness=1,
-        )
-        self.custom_preview.pack(fill="x")
-        self.custom_preview.bind(
-            "<Configure>", lambda _event: self._update_custom_preview(),
-        )
-
-        self.custom_editor = tk.Frame(self.custom_body, bg=panel)
-        self.custom_editor.pack(fill="both", expand=True, pady=(9, 0))
-        tk.Label(
-            self.custom_editor,
-            text="MESSAGE",
-            bg=panel,
-            fg=muted,
-            font=("Consolas", 8, "bold"),
-        ).pack(anchor="w")
-        ttk.Entry(
-            self.custom_editor,
-            textvariable=self.custom_text_var,
-            style="Dark.TEntry",
-            font=("Segoe UI Semibold", 12),
-        ).pack(fill="x", pady=(4, 8))
-        options = tk.Frame(self.custom_editor, bg=panel)
+        self.custom_shell = tk.Frame(self.content, bg=p["panel"], padx=20, pady=16,
+                                     highlightthickness=1, highlightbackground=p["border"])
+        self.custom_shell.grid(row=0, column=0, sticky="nsew")
+        self.custom_head = tk.Frame(self.custom_shell, bg=p["panel"])
+        self.custom_head.pack(fill="x")
+        label(self.custom_head, "A status that's yours.", 17, bold=True).pack(anchor="w")
+        label(self.custom_head, "Pick a symbol, add a message, make it visible.", 9, p["muted"]).pack(anchor="w", pady=(3, 12))
+        self.custom_body = tk.Frame(self.custom_shell, bg=p["panel"])
+        self.custom_body.pack(fill="both", expand=True)
+        self.custom_preview = tk.Canvas(self.custom_body, height=126, highlightthickness=0)
+        self.custom_preview.pack(fill="x", pady=(0, 12))
+        self.custom_preview.bind("<Configure>", lambda _event: self._update_custom_preview())
+        self.custom_editor = tk.Frame(self.custom_body, bg=p["panel"])
+        self.custom_editor.pack(fill="x")
+        label(self.custom_editor, "Message - up to 24 characters", 9, p["muted"]).pack(anchor="w")
+        ttk.Entry(self.custom_editor, textvariable=self.custom_text_var, style="Dark.TEntry",
+                  font=("Segoe UI", 12)).pack(fill="x", pady=(5, 12))
+        options = tk.Frame(self.custom_editor, bg=p["panel"])
         options.pack(fill="x")
-        self.custom_symbol_picker = ttk.Combobox(
-            options,
-            textvariable=self.custom_symbol_var,
-            values=list(CUSTOM_SYMBOLS),
-            state="readonly",
-            style="Dark.TCombobox",
-            font=("Segoe UI", 9),
-        )
+        self.custom_symbol_picker = ttk.Combobox(options, textvariable=self.custom_symbol_var,
+            values=list(CUSTOM_SYMBOLS), state="readonly", style="Dark.TCombobox")
         self.custom_symbol_picker.pack(side="left", fill="x", expand=True)
-        self.custom_symbol_picker.bind(
-            "<<ComboboxSelected>>",
-            lambda _event: self._update_custom_preview(),
-        )
-        self.custom_color_button = tk.Button(
-            options,
-            text=self.custom_color.upper(),
-            command=self.choose_custom_color,
-            bg=self.custom_color,
-            fg="#ffffff",
-            activebackground=self.custom_color,
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=10,
-            highlightthickness=1,
-            highlightbackground=border,
-            font=("Consolas", 9),
-            cursor="hand2",
-        )
-        self.custom_color_button.pack(
-            side="left", padx=(7, 0), ipady=4,
-        )
-        self.custom_send_button = tk.Button(
-            self.custom_editor,
-            text="BROADCAST CUSTOM SIGNAL",
-            command=self.send_custom,
-            bg="#8957e5",
-            fg="#ffffff",
-            activebackground=violet,
-            activeforeground="#ffffff",
-            relief="flat",
-            font=("Segoe UI Semibold", 10),
-            cursor="hand2",
-            highlightthickness=1,
-            highlightbackground="#bd93ff",
-        )
-        self.custom_send_button.pack(fill="x", pady=(9, 0), ipady=6)
+        self.custom_symbol_picker.bind("<<ComboboxSelected>>", lambda _event: self._update_custom_preview())
+        self.custom_color_button = button(options, self.custom_color, self.choose_custom_color)
+        self.custom_color_button.configure(bg=self.custom_color, fg="#ffffff")
+        self.custom_color_button.pack(side="left", padx=(10, 0))
+        self.custom_send_button = button(self.custom_editor, "Send to badge", self.send_custom, True)
+        self.custom_send_button.pack(fill="x", pady=(16, 0))
         self._update_custom_preview()
-        self.custom_shell.grid_remove()
+        self._update_current_badge_preview()
+        self._show_composer(self.custom_panel_visible)
 
-        # Persistent system log.
-        self.activity_shell, activity = card(self.root)
-        self.activity_shell.pack(
-            side="bottom",
-            before=self.content,
-            fill="x",
-            padx=22,
-            pady=(8, 10),
-        )
-        self.activity_dot = tk.Label(
-            activity,
-            text="\u25cf",
-            bg=panel,
-            fg="#6e7f93",
-            font=("Segoe UI", 11),
-        )
-        self.activity_dot.pack(side="left", padx=(14, 7), pady=7)
-        tk.Label(
-            activity,
-            text="SYSTEM LOG  //",
-            bg=panel,
-            fg=cyan,
-            font=("Consolas", 8, "bold"),
-        ).pack(side="left", padx=(0, 8))
-        self.connection_label = tk.Label(
-            activity,
-            textvariable=self.connection_var,
-            bg=panel,
-            fg=muted,
-            anchor="w",
-            pady=7,
-            font=("Segoe UI Semibold", 9),
-        )
-        self.connection_label.pack(side="left", fill="x", expand=True)
-        tk.Label(
-            activity,
-            text="LOCAL WI-FI / PORT 8080",
-            bg=panel,
-            fg="#526a85",
-            font=("Consolas", 7, "bold"),
-        ).pack(side="right", padx=14)
+    def toggle_profile_details(self) -> None:
+        self.profile_details_open = not self.profile_details_open
+        self._apply_responsive_layout()
 
-    def _build_ui_previous(self) -> None:
-        bg = "#070b14"
-        glass = "#101827"
-        field = "#0b1422"
-        border = "#2a405e"
-        text = "#f4f8ff"
-        muted = "#8fa4bd"
-        blue = "#58a6ff"
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(
-            "Dark.TEntry",
-            fieldbackground=field,
-            foreground=text,
-            insertcolor=text,
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
-            padding=9,
-        )
-        style.configure(
-            "Dark.TCombobox",
-            fieldbackground=field,
-            background="#17263b",
-            foreground=text,
-            arrowcolor=text,
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
-            padding=9,
-        )
-        style.map(
-            "Dark.TCombobox",
-            fieldbackground=[("readonly", field)],
-            foreground=[("readonly", text)],
-            selectbackground=[("readonly", field)],
-            selectforeground=[("readonly", text)],
-        )
-
-        def card(parent):
-            shell = tk.Frame(
-                parent, bg="#09101c",
-                highlightbackground="#1b2b42", highlightthickness=1,
-            )
-            body = tk.Frame(
-                shell, bg=glass,
-                highlightbackground=border, highlightthickness=1,
-            )
-            body.pack(fill="both", expand=True, padx=2, pady=2)
-            return shell, body
-
-        def small_button(parent, label, command, fg=text, button_bg="#17263b"):
-            return tk.Button(
-                parent, text=label, command=command,
-                bg=button_bg, fg=fg,
-                activebackground="#223752", activeforeground="#ffffff",
-                relief="flat", bd=0, padx=12,
-                font=("Segoe UI Semibold", 9), cursor="hand2",
-            )
-
-        # Gradient header and glass telemetry chips.
-        self.hero = tk.Canvas(
-            self.root, height=132, bg=bg, highlightthickness=0,
-        )
-        self.hero.pack(fill="x", padx=24, pady=(16, 8))
-        for y in range(132):
-            ratio = y / 131
-            color = "#%02x%02x%02x" % (
-                int(10 + 8 * ratio),
-                int(22 + 10 * ratio),
-                int(39 + 20 * ratio),
-            )
-            self.hero.create_line(0, y, 1000, y, fill=color)
-        self.hero.create_oval(690, -115, 930, 125, fill="#152d57", outline="")
-        self.hero.create_oval(790, -85, 990, 115, fill="#33235e", outline="")
-        self.hero.create_line(0, 131, 1000, 131, fill="#355175")
-        self.hero.create_text(
-            20, 32, text="Work Status", anchor="w", fill=text,
-            font=("Segoe UI Semibold", 27),
-        )
-        self.hero.create_text(
-            21, 66, text="Your door sign control room", anchor="w", fill=muted,
-            font=("Segoe UI", 11),
-        )
-        self.current_badge = self.hero.create_text(
-            21, 99, text=self.current_var.get(), anchor="w", fill=blue,
-            font=("Segoe UI Semibold", 10),
-        )
-
-        def chip(x1, x2, title):
-            self.hero.create_rectangle(
-                x1, 28, x2, 103, fill=field, outline="#345071", width=1,
-            )
-            self.hero.create_line(x1 + 1, 29, x2 - 1, 29, fill="#56779f")
-            self.hero.create_text(
-                x1 + 17, 47, text=title, anchor="w", fill=muted,
-                font=("Segoe UI Semibold", 8),
-            )
-
-        chip(455, 590, "CONNECTION")
-        self.connection_dot = self.hero.create_oval(
-            472, 66, 482, 76, fill="#6e7f93", outline="",
-        )
-        self.connection_state_display = self.hero.create_text(
-            490, 71, text="OFFLINE", anchor="w", fill="#a9b8c9",
-            font=("Segoe UI Semibold", 10),
-        )
-        chip(600, 735, "BATTERY")
-        self.battery_display = self.hero.create_text(
-            617, 72, text="--%", anchor="w", fill=muted,
-            font=("Segoe UI Semibold", 14),
-        )
-        chip(745, 890, "CURRENT STATUS")
-        self.current_status_display = self.hero.create_text(
-            762, 72, text="—", anchor="w", fill=text,
-            font=("Segoe UI Semibold", 12),
-        )
-
-        # Saved badge profile.
-        profile_shell, profile = card(self.root)
-        profile_shell.pack(fill="x", padx=24, pady=(0, 12))
-        heading = tk.Frame(profile, bg=glass)
-        heading.pack(fill="x", padx=16, pady=(10, 7))
-        tk.Label(
-            heading, text="Badge connection", bg=glass, fg=text,
-            font=("Segoe UI Semibold", 12),
-        ).pack(side="left")
-        tk.Label(
-            heading, text="Profiles stay on this laptop", bg=glass, fg=muted,
-            font=("Segoe UI", 8),
-        ).pack(side="right")
-
-        selector = tk.Frame(profile, bg=glass)
-        selector.pack(fill="x", padx=16, pady=(0, 7))
-        self.device_picker = ttk.Combobox(
-            selector, textvariable=self.device_var,
-            values=sorted(self.profiles), state="readonly",
-            style="Dark.TCombobox", font=("Segoe UI", 10),
-        )
-        self.device_picker.pack(side="left", fill="x", expand=True)
-        self.device_picker.bind("<<ComboboxSelected>>", self._select_profile)
-        self.new_badge_button = small_button(
-            selector, "+ New", self.new_profile, fg=blue,
-        )
-        self.new_badge_button.pack(side="left", padx=(8, 0), ipady=5)
-        self.refresh_button = small_button(
-            selector, "Connect", self.refresh_status,
-            fg="#ffffff", button_bg="#1f6feb",
-        )
-        self.refresh_button.pack(side="left", padx=(8, 0), ipady=5)
-
-        labels = tk.Frame(profile, bg=glass)
-        labels.pack(fill="x", padx=18)
-        tk.Label(
-            labels, text="Profile name", bg=glass, fg=muted,
-            font=("Segoe UI", 8),
-        ).pack(side="left")
-        tk.Label(
-            labels, text="Badge IP address (press C on badge)",
-            bg=glass, fg=muted, font=("Segoe UI", 8),
-        ).pack(side="left", padx=(190, 0))
-        editor = tk.Frame(profile, bg=glass)
-        editor.pack(fill="x", padx=16, pady=(3, 11))
-        ttk.Entry(
-            editor, textvariable=self.profile_name_var,
-            style="Dark.TEntry", font=("Segoe UI", 10),
-        ).pack(side="left", fill="x", expand=True)
-        self.address_entry = ttk.Entry(
-            editor, textvariable=self.address_var, style="Dark.TEntry",
-            font=("Consolas", 10), show="\u2022",
-        )
-        self.address_entry.pack(side="left", fill="x", expand=True, padx=(8, 0))
-        self.address_entry.bind("<Return>", lambda _event: self.save_profile())
-        self.visibility_button = small_button(
-            editor, "Show IP", self.toggle_address_visibility, fg=blue,
-        )
-        self.visibility_button.pack(side="left", padx=(6, 0), ipady=5)
-        self.save_button = small_button(editor, "Save", self.save_profile)
-        self.save_button.pack(side="left", padx=(8, 0), ipady=5)
-        self.delete_button = small_button(
-            editor, "Forget", self.forget_profile, fg="#ff7b72",
-        )
-        self.delete_button.pack(side="left", padx=(6, 0), ipady=5)
-
-        # Status controls and custom status sit side by side.
-        content = tk.Frame(self.root, bg=bg)
-        content.pack(fill="both", expand=True, padx=24)
-        content.columnconfigure(0, weight=3, uniform="content")
-        content.columnconfigure(1, weight=2, uniform="content")
-        content.rowconfigure(0, weight=1)
-        status_shell, status_card = card(content)
-        status_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        custom_shell, custom_card = card(content)
-        custom_shell.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-
-        note_head = tk.Frame(status_card, bg=glass)
-        note_head.pack(fill="x", padx=16, pady=(12, 0))
-        tk.Label(
-            note_head, text="Choose a status", bg=glass, fg=text,
-            font=("Segoe UI Semibold", 12),
-        ).pack(side="left")
-        tk.Label(
-            note_head, textvariable=self.note_count_var, bg=glass, fg=muted,
-            font=("Consolas", 9),
-        ).pack(side="right")
-        tk.Label(
-            status_card, text="Optional message shown beneath the status",
-            bg=glass, fg=muted, font=("Segoe UI", 8),
-        ).pack(anchor="w", padx=16, pady=(2, 0))
-        ttk.Entry(
-            status_card, textvariable=self.note_var,
-            style="Dark.TEntry", font=("Segoe UI", 11),
-        ).pack(fill="x", padx=16, pady=(7, 9))
-
-        grid = tk.Frame(status_card, bg=glass)
-        grid.pack(fill="both", expand=True, padx=11, pady=(0, 11))
-        for index, (status, details) in enumerate(STATUSES.items()):
-            label, subtitle, color = details
-            button = tk.Button(
-                grid, text=label.upper() + "\n" + subtitle,
-                command=lambda selected=status: self.send_status(selected),
-                bg=color, fg="#ffffff", activebackground=color,
-                activeforeground="#ffffff", disabledforeground="#c9d1d9",
-                relief="flat", bd=0, font=("Segoe UI Semibold", 11),
-                cursor="hand2",
-            )
-            button.bind(
-                "<Enter>",
-                lambda _event, item=button: item.configure(relief="raised", bd=2),
-            )
-            button.bind(
-                "<Leave>",
-                lambda _event, item=button: self._restore_button_border(item),
-            )
-            button.grid(
-                row=index // 2, column=index % 2, sticky="nsew",
-                padx=5, pady=5,
-            )
-            self.status_buttons[status] = button
-        grid.columnconfigure(0, weight=1)
-        grid.columnconfigure(1, weight=1)
-        for row in range(3):
-            grid.rowconfigure(row, weight=1)
-
-        custom_head = tk.Frame(custom_card, bg=glass)
-        custom_head.pack(fill="x", padx=16, pady=(12, 8))
-        tk.Label(
-            custom_head, text="Create your own", bg=glass, fg=text,
-            font=("Segoe UI Semibold", 12),
-        ).pack(anchor="w")
-        tk.Label(
-            custom_head, text="Preview exactly what you will send",
-            bg=glass, fg=muted, font=("Segoe UI", 8),
-        ).pack(anchor="w", pady=(2, 0))
-        custom_body = tk.Frame(custom_card, bg=glass)
-        custom_body.pack(fill="both", expand=True, padx=15, pady=(0, 14))
-        self.custom_preview = tk.Canvas(
-            custom_body, height=137, bg=self.custom_color,
-            highlightbackground="#ffffff", highlightthickness=1,
-        )
-        self.custom_preview.pack(fill="x")
-        self.custom_preview_symbol = self.custom_preview.create_text(
-            156, 45,
-            text=SYMBOL_EMOJI[CUSTOM_SYMBOLS[self.custom_symbol_var.get()]],
-            fill="#ffffff", font=("Segoe UI Emoji", 38),
-        )
-        self.custom_preview_text = self.custom_preview.create_text(
-            156, 105, text=self.custom_text_var.get(), fill="#ffffff",
-            width=285, justify="center", font=("Segoe UI Semibold", 13),
-        )
-        custom_editor = tk.Frame(custom_body, bg=glass)
-        custom_editor.pack(fill="both", expand=True, pady=(9, 0))
-        tk.Label(
-            custom_editor, text="Status text", bg=glass, fg=muted,
-            font=("Segoe UI Semibold", 9),
-        ).pack(anchor="w")
-        ttk.Entry(
-            custom_editor, textvariable=self.custom_text_var,
-            style="Dark.TEntry", font=("Segoe UI Semibold", 12),
-        ).pack(fill="x", pady=(4, 8))
-        options = tk.Frame(custom_editor, bg=glass)
-        options.pack(fill="x")
-        self.custom_symbol_picker = ttk.Combobox(
-            options, textvariable=self.custom_symbol_var,
-            values=list(CUSTOM_SYMBOLS), state="readonly",
-            style="Dark.TCombobox", font=("Segoe UI Emoji", 9),
-        )
-        self.custom_symbol_picker.pack(side="left", fill="x", expand=True)
-        self.custom_symbol_picker.bind(
-            "<<ComboboxSelected>>",
-            lambda _event: self._update_custom_preview(),
-        )
-        self.custom_color_button = tk.Button(
-            options, text=self.custom_color.upper(),
-            command=self.choose_custom_color, bg=self.custom_color,
-            fg="#ffffff", activebackground=self.custom_color,
-            activeforeground="#ffffff", relief="flat", padx=9,
-            font=("Consolas", 9), cursor="hand2",
-        )
-        self.custom_color_button.pack(side="left", padx=(7, 0), ipady=5)
-        self.custom_send_button = tk.Button(
-            custom_editor, text="SEND CUSTOM STATUS",
-            command=self.send_custom, bg="#8957e5", fg="#ffffff",
-            activebackground="#a371f7", activeforeground="#ffffff",
-            relief="flat", font=("Segoe UI Semibold", 10), cursor="hand2",
-        )
-        self.custom_send_button.pack(fill="x", pady=(9, 0), ipady=7)
-
-        # Persistent activity strip gives every network action a clear result.
-        activity_shell, activity = card(self.root)
-        activity_shell.pack(fill="x", padx=24, pady=(12, 17))
-        self.activity_dot = tk.Label(
-            activity, text="\u25cf", bg=glass, fg="#6e7f93",
-            font=("Segoe UI", 11),
-        )
-        self.activity_dot.pack(side="left", padx=(14, 6), pady=8)
-        self.connection_label = tk.Label(
-            activity, textvariable=self.connection_var, bg=glass, fg=muted,
-            anchor="w", pady=8, font=("Segoe UI Semibold", 9),
-        )
-        self.connection_label.pack(side="left", fill="x", expand=True)
-        tk.Label(
-            activity, text="Local Wi-Fi", bg=glass, fg="#657b96",
-            font=("Segoe UI", 8),
-        ).pack(side="right", padx=14)
-
-    def _build_ui_legacy(self) -> None:
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(
-            "Dark.TEntry",
-            fieldbackground="#161b22",
-            foreground="#f0f6fc",
-            insertcolor="#f0f6fc",
-            bordercolor="#30363d",
-            lightcolor="#30363d",
-            darkcolor="#30363d",
-            padding=8,
-        )
-        style.configure(
-            "Dark.TCombobox",
-            fieldbackground="#161b22",
-            background="#21262d",
-            foreground="#f0f6fc",
-            arrowcolor="#f0f6fc",
-            bordercolor="#30363d",
-            lightcolor="#30363d",
-            darkcolor="#30363d",
-            padding=8,
-        )
-        style.map(
-            "Dark.TCombobox",
-            fieldbackground=[("readonly", "#161b22")],
-            foreground=[("readonly", "#f0f6fc")],
-            selectbackground=[("readonly", "#161b22")],
-            selectforeground=[("readonly", "#f0f6fc")],
-        )
-
-        self.hero = tk.Canvas(
-            self.root,
-            height=105,
-            bg="#0d1117",
-            highlightthickness=0,
-        )
-        self.hero.pack(fill="x", padx=28, pady=(18, 8))
-        self.hero.create_oval(510, -70, 700, 120, fill="#1f6feb", outline="")
-        self.hero.create_oval(570, -30, 730, 130, fill="#a371f7", outline="")
-        self.hero.create_text(
-            4, 27,
-            text="WORK STATUS",
-            anchor="w",
-            fill="#f0f6fc",
-            font=("Segoe UI Semibold", 26),
-        )
-        self.hero.create_text(
-            5, 62,
-            text="A tiny control room for your door sign",
-            anchor="w",
-            fill="#8b949e",
-            font=("Segoe UI", 11),
-        )
-        self.current_badge = self.hero.create_text(
-            5, 88,
-            text=self.current_var.get(),
-            anchor="w",
-            fill="#58a6ff",
-            font=("Segoe UI Semibold", 9),
-        )
-        self.hero.create_rectangle(
-            475, 70, 615, 100,
-            fill="#0d1117",
-            outline="#30363d",
-            width=1,
-        )
-        self.battery_display = self.hero.create_text(
-            545, 85,
-            text="BATTERY  --%",
-            fill="#8b949e",
-            font=("Segoe UI Semibold", 10),
-        )
-
-        profile_card = tk.Frame(
-            self.root,
-            bg="#161b22",
-            highlightbackground="#30363d",
-            highlightthickness=1,
-        )
-        profile_card.pack(fill="x", padx=28, pady=(0, 16))
-
-        card_header = tk.Frame(profile_card, bg="#161b22")
-        card_header.pack(fill="x", padx=16, pady=(13, 8))
-        tk.Label(
-            card_header,
-            text="BADGE PROFILES",
-            bg="#161b22",
-            fg="#8b949e",
-            font=("Segoe UI Semibold", 9),
-        ).pack(side="left")
-        tk.Label(
-            card_header,
-            text="Saved only on this laptop",
-            bg="#161b22",
-            fg="#6e7681",
-            font=("Segoe UI", 8),
-        ).pack(side="right")
-
-        selector_row = tk.Frame(profile_card, bg="#161b22")
-        selector_row.pack(fill="x", padx=16, pady=(0, 10))
-        self.device_picker = ttk.Combobox(
-            selector_row,
-            textvariable=self.device_var,
-            values=sorted(self.profiles),
-            state="readonly",
-            style="Dark.TCombobox",
-            font=("Segoe UI", 10),
-        )
-        self.device_picker.pack(side="left", fill="x", expand=True)
-        self.device_picker.bind("<<ComboboxSelected>>", self._select_profile)
-        self.new_badge_button = tk.Button(
-            selector_row,
-            text="New Badge",
-            command=self.new_profile,
-            bg="#21262d",
-            fg="#58a6ff",
-            activebackground="#30363d",
-            activeforeground="#79c0ff",
-            relief="flat",
-            padx=14,
-            font=("Segoe UI Semibold", 9),
-            cursor="hand2",
-        )
-        self.new_badge_button.pack(side="left", padx=(8, 0), ipady=5)
-        self.refresh_button = tk.Button(
-            selector_row,
-            text="Connect",
-            command=self.refresh_status,
-            bg="#238636",
-            fg="#ffffff",
-            activebackground="#2ea043",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=18,
-            font=("Segoe UI Semibold", 10),
-            cursor="hand2",
-        )
-        self.refresh_button.pack(side="left", padx=(8, 0), ipady=5)
-
-        editor_labels = tk.Frame(profile_card, bg="#161b22")
-        editor_labels.pack(fill="x", padx=18)
-        tk.Label(
-            editor_labels,
-            text="Profile name",
-            bg="#161b22",
-            fg="#6e7681",
-            font=("Segoe UI", 8),
-        ).pack(side="left")
-        tk.Label(
-            editor_labels,
-            text="Badge address (press C on badge)",
-            bg="#161b22",
-            fg="#6e7681",
-            font=("Segoe UI", 8),
-        ).pack(side="left", padx=(105, 0))
-
-        editor_row = tk.Frame(profile_card, bg="#161b22")
-        editor_row.pack(fill="x", padx=16, pady=(3, 14))
-        name_entry = ttk.Entry(
-            editor_row,
-            textvariable=self.profile_name_var,
-            style="Dark.TEntry",
-            font=("Segoe UI", 10),
-        )
-        name_entry.pack(side="left", fill="x", expand=True)
-        self.address_entry = ttk.Entry(
-            editor_row,
-            textvariable=self.address_var,
-            style="Dark.TEntry",
-            font=("Consolas", 10),
-            show="•",
-        )
-        self.address_entry.pack(side="left", fill="x", expand=True, padx=(8, 0))
-        self.address_entry.bind("<Return>", lambda _event: self.save_profile())
-        self.visibility_button = tk.Button(
-            editor_row,
-            text="Show IP",
-            command=self.toggle_address_visibility,
-            bg="#21262d",
-            fg="#58a6ff",
-            activebackground="#30363d",
-            activeforeground="#79c0ff",
-            relief="flat",
-            padx=10,
-            font=("Segoe UI Semibold", 9),
-            cursor="hand2",
-        )
-        self.visibility_button.pack(side="left", padx=(6, 0), ipady=5)
-        self.save_button = tk.Button(
-            editor_row,
-            text="Save Badge",
-            command=self.save_profile,
-            bg="#21262d",
-            fg="#f0f6fc",
-            activebackground="#30363d",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=13,
-            font=("Segoe UI Semibold", 9),
-            cursor="hand2",
-        )
-        self.save_button.pack(side="left", padx=(8, 0), ipady=5)
-        self.delete_button = tk.Button(
-            editor_row,
-            text="Forget",
-            command=self.forget_profile,
-            bg="#21262d",
-            fg="#f85149",
-            activebackground="#30363d",
-            activeforeground="#ff7b72",
-            relief="flat",
-            padx=10,
-            font=("Segoe UI Semibold", 9),
-            cursor="hand2",
-        )
-        self.delete_button.pack(side="left", padx=(6, 0), ipady=5)
-
-        note_header = tk.Frame(self.root, bg="#0d1117")
-        note_header.pack(fill="x", padx=30)
-        tk.Label(
-            note_header,
-            text="MESSAGE ON THE DOOR",
-            bg="#0d1117",
-            fg="#8b949e",
-            font=("Segoe UI Semibold", 9),
-        ).pack(side="left")
-        tk.Label(
-            note_header,
-            textvariable=self.note_count_var,
-            bg="#0d1117",
-            fg="#6e7681",
-            font=("Consolas", 9),
-        ).pack(side="right")
-        note_entry = ttk.Entry(
-            self.root,
-            textvariable=self.note_var,
-            style="Dark.TEntry",
-            font=("Segoe UI", 12),
-        )
-        note_entry.pack(fill="x", padx=28, pady=(6, 16))
-
-        button_grid = tk.Frame(self.root, bg="#0d1117")
-        button_grid.pack(fill="both", expand=True, padx=23)
-        for index, (status, details) in enumerate(STATUSES.items()):
-            label, subtitle, color = details
-            button = tk.Button(
-                button_grid,
-                text=label.upper() + "\n" + subtitle,
-                command=lambda selected=status: self.send_status(selected),
-                bg=color,
-                fg="#ffffff",
-                activebackground=color,
-                activeforeground="#ffffff",
-                disabledforeground="#c9d1d9",
-                relief="flat",
-                bd=0,
-                font=("Segoe UI Semibold", 13),
-                cursor="hand2",
-            )
-            button.bind(
-                "<Enter>",
-                lambda _event, item=button: item.configure(relief="raised", bd=2),
-            )
-            button.bind(
-                "<Leave>",
-                lambda _event, item=button: self._restore_button_border(item),
-            )
-            button.grid(
-                row=index // 2,
-                column=index % 2,
-                sticky="nsew",
-                padx=5,
-                pady=5,
-            )
-            self.status_buttons[status] = button
-        button_grid.columnconfigure(0, weight=1)
-        button_grid.columnconfigure(1, weight=1)
-        button_grid.rowconfigure(0, weight=1)
-        button_grid.rowconfigure(1, weight=1)
-        button_grid.rowconfigure(2, weight=1)
-
-        custom_card = tk.Frame(
-            self.root,
-            bg="#161b22",
-            highlightbackground="#30363d",
-            highlightthickness=1,
-        )
-        custom_card.pack(fill="x", padx=28, pady=(14, 0))
-        custom_heading = tk.Frame(custom_card, bg="#161b22")
-        custom_heading.pack(fill="x", padx=16, pady=(13, 8))
-        tk.Label(
-            custom_heading,
-            text="CREATE YOUR OWN STATUS",
-            bg="#161b22",
-            fg="#f0f6fc",
-            font=("Segoe UI Semibold", 12),
-        ).pack(anchor="w")
-        tk.Label(
-            custom_heading,
-            text="Pick an emoji, color and message — preview it before sending",
-            bg="#161b22",
-            fg="#8b949e",
-            font=("Segoe UI", 9),
-        ).pack(anchor="w", pady=(2, 0))
-
-        custom_body = tk.Frame(custom_card, bg="#161b22")
-        custom_body.pack(fill="x", padx=15, pady=(0, 15))
-        self.custom_preview = tk.Canvas(
-            custom_body,
-            width=138,
-            height=132,
-            bg=self.custom_color,
-            highlightthickness=0,
-        )
-        self.custom_preview.pack(side="left")
-        self.custom_preview_symbol = self.custom_preview.create_text(
-            69, 48,
-            text=SYMBOL_EMOJI[CUSTOM_SYMBOLS[self.custom_symbol_var.get()]],
-            fill="#ffffff",
-            font=("Segoe UI Emoji", 38),
-        )
-        self.custom_preview_text = self.custom_preview.create_text(
-            69, 102,
-            text=self.custom_text_var.get(),
-            fill="#ffffff",
-            width=124,
-            justify="center",
-            font=("Segoe UI Semibold", 11),
-        )
-
-        custom_editor = tk.Frame(custom_body, bg="#161b22")
-        custom_editor.pack(side="left", fill="both", expand=True, padx=(14, 0))
-        tk.Label(
-            custom_editor,
-            text="Status text",
-            bg="#161b22",
-            fg="#8b949e",
-            font=("Segoe UI Semibold", 9),
-        ).pack(anchor="w")
-        custom_text_entry = ttk.Entry(
-            custom_editor,
-            textvariable=self.custom_text_var,
-            style="Dark.TEntry",
-            font=("Segoe UI Semibold", 13),
-        )
-        custom_text_entry.pack(fill="x", pady=(4, 10))
-
-        custom_options = tk.Frame(custom_editor, bg="#161b22")
-        custom_options.pack(fill="x")
-        self.custom_symbol_picker = ttk.Combobox(
-            custom_options,
-            textvariable=self.custom_symbol_var,
-            values=list(CUSTOM_SYMBOLS),
-            state="readonly",
-            width=16,
-            style="Dark.TCombobox",
-            font=("Segoe UI Emoji", 10),
-        )
-        self.custom_symbol_picker.pack(side="left", fill="x", expand=True)
-        self.custom_symbol_picker.bind(
-            "<<ComboboxSelected>>",
-            lambda _event: self._update_custom_preview(),
-        )
-        self.custom_color_button = tk.Button(
-            custom_options,
-            text="Choose color  " + self.custom_color.upper(),
-            command=self.choose_custom_color,
-            bg=self.custom_color,
-            fg="#ffffff",
-            activebackground=self.custom_color,
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=14,
-            font=("Consolas", 9),
-            cursor="hand2",
-        )
-        self.custom_color_button.pack(side="left", padx=(8, 0), ipady=5)
-        self.custom_send_button = tk.Button(
-            custom_editor,
-            text="SEND MY CUSTOM STATUS",
-            command=self.send_custom,
-            bg="#8957e5",
-            fg="#ffffff",
-            activebackground="#a371f7",
-            activeforeground="#ffffff",
-            relief="flat",
-            font=("Segoe UI Semibold", 11),
-            cursor="hand2",
-        )
-        self.custom_send_button.pack(fill="x", pady=(10, 0), ipady=7)
-
-        self.connection_label = tk.Label(
-            self.root,
-            textvariable=self.connection_var,
-            bg="#161b22",
-            fg="#8b949e",
-            anchor="w",
-            padx=14,
-            pady=11,
-            font=("Segoe UI Semibold", 9),
-        )
-        self.connection_label.pack(fill="x", padx=28, pady=(15, 22))
+    def _show_composer(self, visible: bool) -> None:
+        self.custom_panel_visible = visible
+        self._apply_responsive_layout()
 
     def _limit_note(self, *_args) -> None:
         value = self.note_var.get()
         if len(value) > 24:
             self.note_var.set(value[:24])
-            return
-        self.note_count_var.set("%d / 24" % len(value))
+        self.note_count_var.set("%d / 24" % min(len(value), 24))
 
     def _limit_custom_text(self, *_args) -> None:
         value = self.custom_text_var.get()
         if len(value) > 24:
             self.custom_text_var.set(value[:24])
-            return
         self._update_custom_preview()
 
     def _update_current_badge_preview(self) -> None:
@@ -2029,8 +862,8 @@ class WorkStatusController:
         if canvas is None:
             return
         canvas.delete("all")
-        width = max(canvas.winfo_width(), 212)
-        height = max(canvas.winfo_height(), 128)
+        width = max(canvas.winfo_width(), 1)
+        height = max(canvas.winfo_height(), 1)
         payload = self.current_payload
 
         if not payload:
@@ -2111,6 +944,7 @@ class WorkStatusController:
                 canvas.create_rectangle(
                     10, 10, 10 + fill, 14, fill=accent, outline="",
                 )
+        canvas.scale("all", width / 2, 0, 1, min(1.0, height / 128))
 
     @staticmethod
     def _draw_preset_symbol(
@@ -2532,16 +1366,7 @@ class WorkStatusController:
         self._status_columns = columns
 
     def toggle_custom_panel(self) -> None:
-        self.custom_panel_visible = not self.custom_panel_visible
-        if self.custom_toggle_button is not None:
-            self.custom_toggle_button.configure(
-                text=(
-                    "HIDE CUSTOM"
-                    if self.custom_panel_visible
-                    else "SHOW CUSTOM"
-                ),
-            )
-        self.root.after_idle(self._apply_responsive_layout)
+        self._show_composer(not self.custom_panel_visible)
 
     def _on_root_configure(self, event) -> None:
         if event.widget is not self.root:
@@ -2553,113 +1378,41 @@ class WorkStatusController:
         )
 
     def _apply_responsive_layout(self) -> None:
-        """Keep the full dashboard usable on short and narrow displays."""
         self._responsive_after = None
         if self.closing or not self.root.winfo_exists():
             return
-        width = self.root.winfo_width()
-        height = self.root.winfo_height()
-        compact = height < 780
-        narrow = width < 1050
-        show_header_telemetry = width >= 760
-        show_preview = width >= 940
-        outer_pad = 14 if width < 1000 else 22
-
-        self.hero.configure(height=132 if compact else 154)
-        self.hero.pack_configure(
-            padx=outer_pad,
-            pady=(6, 5) if compact else (12, 8),
-        )
-        self.profile_shell.pack_configure(
-            padx=outer_pad,
-            pady=(0, 7) if compact else (0, 12),
-        )
-        self.content.pack_configure(padx=outer_pad)
-        self.activity_shell.pack_configure(
-            padx=outer_pad,
-            pady=(5, 5) if compact else (8, 10),
-        )
-        if (
-            self.status_shell is not None
-            and self.custom_shell is not None
-        ):
-            if not self.custom_panel_visible:
-                self.custom_shell.grid_remove()
-                self.content.columnconfigure(0, weight=1, uniform="")
-                self.content.columnconfigure(1, weight=0, uniform="")
-                self.content.rowconfigure(0, weight=1)
-                self.content.rowconfigure(1, weight=0)
-                self.status_shell.grid_configure(
-                    row=0, column=0, columnspan=2, padx=0, pady=0,
-                )
-            else:
-                self.custom_shell.grid()
-                if narrow:
-                    self.content.columnconfigure(0, weight=1, uniform="")
-                    self.content.columnconfigure(1, weight=0, uniform="")
-                    self.content.rowconfigure(0, weight=3)
-                    self.content.rowconfigure(1, weight=2)
-                    self.status_shell.grid_configure(
-                        row=0, column=0, columnspan=1, padx=0, pady=(0, 6),
-                    )
-                    self.custom_shell.grid_configure(
-                        row=1, column=0, padx=0, pady=(6, 0),
-                    )
-                else:
-                    self.content.columnconfigure(0, weight=11, uniform="content")
-                    self.content.columnconfigure(1, weight=9, uniform="content")
-                    self.content.rowconfigure(0, weight=1)
-                    self.content.rowconfigure(1, weight=0)
-                    self.status_shell.grid_configure(
-                        row=0, column=0, columnspan=1, padx=(0, 6), pady=0,
-                    )
-                    self.custom_shell.grid_configure(
-                        row=0, column=1, padx=(6, 0), pady=0,
-                    )
-        self._set_status_grid_columns(3 if self.fullscreen and compact else 2)
-
-        self.hero.itemconfigure(
-            "wide_header",
-            state="normal" if show_header_telemetry else "hidden",
-        )
-        if show_preview:
-            if compact:
-                self.preview_shell.place(
-                    relx=1.0, x=-182, y=8, width=168, height=116,
-                )
-            else:
-                self.preview_shell.place(
-                    relx=1.0, x=-238, y=8, width=224, height=138,
-                )
+        width, height = self.root.winfo_width(), self.root.winfo_height()
+        p = THEMES[self.theme_name]
+        self.connection_label.configure(wraplength=max(300, width - 80))
+        self.workspace.pack_configure(padx=14 if width < 1000 else 24,
+                                      pady=10 if height < 700 else 20)
+        self.sidebar.configure(width=236 if width < 1000 else 270)
+        self.sidebar.pack_configure(padx=(0, 16 if width < 1000 else 28))
+        self.current_badge_preview.configure(height=82 if height < 700 else 138)
+        self.profile_shell.pack_configure(pady=8 if height < 700 else 14)
+        if self.profile_details_open:
+            self.profile_editor.pack(fill="x", before=self.refresh_button)
         else:
-            self.preview_shell.place_forget()
-
-        if compact:
-            self.hero.itemconfigure(self.hero_subtitle, state="hidden")
-            self.hero.coords(self.current_badge, 19, 114)
-            control_y = 106
-            control_height = 22
-            self.custom_preview.configure(height=66)
-            self.custom_head.pack_configure(pady=(7, 3))
-            self.custom_body.pack_configure(pady=(0, 8))
-            self.custom_editor.pack_configure(pady=(4, 0))
-            self.custom_send_button.pack_configure(pady=(5, 0), ipady=3)
+            self.profile_editor.pack_forget()
+        self.profile_details_button.configure(
+            text="Hide badge details" if self.profile_details_open else "Edit / add badge")
+        if self.custom_panel_visible:
+            self.status_shell.grid_remove()
+            self.custom_shell.grid()
         else:
-            self.hero.itemconfigure(self.hero_subtitle, state="normal")
-            self.hero.coords(self.current_badge, 19, 120)
-            control_y = 109
-            control_height = 27
-            self.custom_preview.configure(height=118)
-            self.custom_head.pack_configure(pady=(12, 8))
-            self.custom_body.pack_configure(pady=(0, 14))
-            self.custom_editor.pack_configure(pady=(9, 0))
-            self.custom_send_button.pack_configure(pady=(9, 0), ipady=6)
-        self.theme_button.place_configure(y=control_y, height=control_height)
-        self.fullscreen_button.place_configure(y=control_y, height=control_height)
-        self.widget_button.place_configure(y=control_y, height=control_height)
-        self.fullscreen_button.configure(
-            text="EXIT FULL SCREEN" if self.fullscreen else "FULL SCREEN",
-        )
+            self.custom_shell.grid_remove()
+            self.status_shell.grid()
+        for tab, active in ((self.presets_tab, not self.custom_panel_visible),
+                            (self.custom_toggle_button, self.custom_panel_visible)):
+            tab.configure(bg=p["active"] if active else p["bg"],
+                          fg=p["cyan"] if active else p["muted"])
+        self._set_status_grid_columns(2)
+        tile_width = max(120, (width - 330) // 2 - 80)
+        for control in self.status_buttons.values():
+            control.configure(wraplength=tile_width,
+                              font=("Segoe UI Semibold", 10 if width < 1000 else 11))
+        self.custom_preview.configure(height=68 if height < 760 else 126)
+        self.fullscreen_button.configure(text="Exit full screen" if self.fullscreen else "Full screen")
 
     def toggle_fullscreen(self, _event=None):
         """Toggle a borderless view; Escape always returns to a window."""
@@ -2820,18 +1573,27 @@ class WorkStatusController:
 
     def toggle_theme(self) -> None:
         """Switch themes while preserving the active controller state."""
+        if self.busy:
+            return
+        link_state = getattr(self, "_connection_state", ("idle", "OFFLINE"))
         self.theme_name = "dark" if self.theme_name == "light" else "light"
         self._persist_profiles()
+        self.close_widget()
+        self._status_columns = 0
+        self.status_tiles.clear()
         for child in self.root.winfo_children():
             child.destroy()
         self.status_buttons.clear()
         self._build_ui()
         self.root.after_idle(self._apply_responsive_layout)
+        self._highlight_current()
+        self._set_connection_indicator(*link_state)
         if self.current_payload:
-            self._request_succeeded(
-                self.current_payload,
-                self.connection_var.get(),
-            )
+            self._update_battery_display(self.current_payload)
+            status = self.current_payload.get("status")
+            label = STATUSES[status][0] if status in STATUSES else "Custom"
+            self.hero.itemconfigure(self.current_status_display, text=label)
+        self._update_current_badge_preview()
 
     def choose_custom_color(self) -> None:
         _rgb, selected = colorchooser.askcolor(
@@ -2857,22 +1619,19 @@ class WorkStatusController:
         self.visibility_button.configure(
             text="Hide IP" if self.address_visible else "Show IP"
         )
-        return
-        self.address_visible = not self.address_visible
-        self.address_entry.configure(show="" if self.address_visible else "•")
-        self.visibility_button.configure(
-            text="Hide IP" if self.address_visible else "Show IP"
-        )
 
     def _select_profile(self, _event=None) -> None:
+        if self.busy:
+            return
         name = self.device_var.get()
         self.profile_name_var.set(name)
         self.address_var.set(self.profiles.get(name, ""))
         self.current_status = None
         self.current_payload = None
+        self._update_battery_display({})
         self.current_var.set(name.upper() if name else "NOT CONNECTED")
         self.hero.itemconfigure(self.current_badge, text=self.current_var.get())
-        self.hero.itemconfigure(self.current_status_display, text="—", fill="#10213a")
+        self.hero.itemconfigure(self.current_status_display, text="—", fill=THEMES[self.theme_name]["text"])
         self._update_current_badge_preview()
         self._set_connection_indicator("idle", "READY")
         self.connection_var.set("Profile loaded. Press Connect to check the badge.")
@@ -2881,14 +1640,19 @@ class WorkStatusController:
         self._persist_profiles()
 
     def new_profile(self) -> None:
+        if self.busy:
+            return
+        self.profile_details_open = True
+        self._apply_responsive_layout()
         self.device_var.set("")
         self.profile_name_var.set("")
         self.address_var.set("")
         self.current_status = None
         self.current_payload = None
+        self._update_battery_display({})
         self.current_var.set("NEW BADGE")
         self.hero.itemconfigure(self.current_badge, text=self.current_var.get())
-        self.hero.itemconfigure(self.current_status_display, text="—", fill="#10213a")
+        self.hero.itemconfigure(self.current_status_display, text="—", fill=THEMES[self.theme_name]["text"])
         self._update_current_badge_preview()
         self._set_connection_indicator("idle", "SETUP")
         self._highlight_current()
@@ -2898,6 +1662,8 @@ class WorkStatusController:
         self.connection_label.configure(fg="#58a6ff")
 
     def save_profile(self) -> None:
+        if self.busy:
+            return
         name = self.profile_name_var.get().strip()[:32]
         if not name:
             self._show_error("Enter a name for this badge.")
@@ -2921,6 +1687,8 @@ class WorkStatusController:
         self.connection_label.configure(fg="#58a6ff")
 
     def forget_profile(self) -> None:
+        if self.busy:
+            return
         name = self.device_var.get()
         if name in self.profiles:
             del self.profiles[name]
@@ -2931,9 +1699,10 @@ class WorkStatusController:
         self.device_picker.configure(values=sorted(self.profiles))
         self.current_status = None
         self.current_payload = None
+        self._update_battery_display({})
         self.current_var.set("NOT CONNECTED")
         self.hero.itemconfigure(self.current_badge, text=self.current_var.get())
-        self.hero.itemconfigure(self.current_status_display, text="—", fill="#10213a")
+        self.hero.itemconfigure(self.current_status_display, text="—", fill=THEMES[self.theme_name]["text"])
         self._update_current_badge_preview()
         self._set_connection_indicator("idle", "OFFLINE")
         self._highlight_current()
@@ -2963,6 +1732,7 @@ class WorkStatusController:
                 return
 
     def _set_connection_indicator(self, state: str, label: str) -> None:
+        self._connection_state = (state, label)
         colors = {
             "idle": ("#6e7f93", "#a9b8c9"),
             "connecting": ("#d29922", "#f2cc60"),
@@ -2970,6 +1740,9 @@ class WorkStatusController:
             "error": ("#f85149", "#ff7b72"),
         }
         dot, foreground = colors.get(state, colors["idle"])
+        if self.theme_name == "light":
+            foreground = {"idle": "#647a91", "connecting": "#855900",
+                          "connected": "#18793b", "error": "#ba2835"}.get(state, "#647a91")
         self.hero.itemconfigure(self.connection_dot, fill=dot)
         self.hero.itemconfigure(
             self.connection_state_display,
@@ -2982,13 +1755,17 @@ class WorkStatusController:
         self.busy = busy
         state = tk.DISABLED if busy else tk.NORMAL
         self.refresh_button.configure(state=state)
+        for widget in (self.new_badge_button, self.save_button, self.delete_button,
+                       self.theme_button, self.profile_name_entry, self.address_entry):
+            widget.configure(state=state)
+        self.device_picker.configure(state="disabled" if busy else "readonly")
         for button in self.status_buttons.values():
             button.configure(state=state)
         for button in self.widget_buttons.values():
             button.configure(state=state)
         self.custom_send_button.configure(state=state)
         self.connection_var.set(message)
-        self.connection_label.configure(fg="#f2cc60" if busy else "#8fa4bd")
+        self.connection_label.configure(fg=("#855900" if self.theme_name == "light" else "#f2cc60") if busy else THEMES[self.theme_name]["muted"])
         if busy:
             self._set_connection_indicator("connecting", "CONNECTING…")
 
@@ -3126,7 +1903,7 @@ class WorkStatusController:
                     self.pairing_active = False
                     self._persist_profiles()
                     self._set_busy(False, message)
-                    self.connection_label.configure(fg="#3fb950")
+                    self.connection_label.configure(fg="#18793b" if self.theme_name == "light" else "#56d364")
                     self._set_connection_indicator("connected", "PAIRED")
                     self.root.after(150, self.refresh_status)
                 elif kind == "pair_required":
@@ -3145,7 +1922,7 @@ class WorkStatusController:
     def _refresh_battery_periodically(self) -> None:
         if self.closing:
             return
-        if self.address_var.get().strip() and not self.busy:
+        if self.current_payload is not None and self._has_pairing_key() and not self.busy:
             self._run_request(
                 lambda client: client.get_status(),
                 "Badge battery refreshed.",
@@ -3176,6 +1953,9 @@ class WorkStatusController:
         )
 
     def _request_succeeded(self, result: dict, success_message: str) -> None:
+        if self.current_payload is None:
+            self.profile_details_open = False
+            self._apply_responsive_layout()
         self.current_payload = dict(result)
         self._update_battery_display(result)
         status = result.get("status")
@@ -3223,7 +2003,7 @@ class WorkStatusController:
             )
         self._persist_profiles()
         self._set_busy(False, success_message)
-        self.connection_label.configure(fg="#3fb950")
+        self.connection_label.configure(fg="#18793b" if self.theme_name == "light" else "#56d364")
         self._set_connection_indicator("connected", "CONNECTED")
         self._highlight_current()
         self._update_current_badge_preview()
@@ -3243,10 +2023,10 @@ class WorkStatusController:
             tile = getattr(button, "_tile_frame", None)
             if status == self.current_status:
                 if tile is not None:
-                    tile.configure(highlightthickness=3)
+                    tile.configure(highlightthickness=3, highlightbackground=STATUSES[status][2])
             else:
                 if tile is not None:
-                    tile.configure(highlightthickness=1)
+                    tile.configure(highlightthickness=1, highlightbackground=THEMES[self.theme_name]["border"])
         for status, button in self.widget_buttons.items():
             button.configure(
                 highlightthickness=3 if status == self.current_status else 1,

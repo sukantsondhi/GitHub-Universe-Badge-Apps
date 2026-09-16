@@ -42,7 +42,7 @@ STATUS_LABELS = {
     "focus": "DEEP WORK",
     "away": "BACK SOON",
     "lunch": "LUNCH BREAK",
-    "sleep": "SLEEPING",
+    "sleep": "OFFLINE",
     "custom": "CUSTOM",
 }
 CUSTOM_SYMBOLS = (
@@ -107,6 +107,11 @@ security_notice_until = 0
 
 
 def center_text(text, y):
+    # User messages and device names must stay inside the 160-pixel display.
+    if screen.measure_text(text)[0] > 150:
+        while text and screen.measure_text(text + "...")[0] > 150:
+            text = text[:-1]
+        text += "..."
     width, _ = screen.measure_text(text)
     screen.text(text, int(80 - width / 2), y)
 
@@ -1095,13 +1100,13 @@ def draw_address_overlay():
     screen.clear()
     screen.font = SMALL_FONT
     screen.brush = MUTED
-    center_text("BADGE ADDRESS", 22)
-    screen.font = TITLE_FONT
+    center_text("CONNECT YOUR LAPTOP", 22)
+    screen.font = SMALL_FONT
     screen.brush = GREEN
-    center_text(ip_address, 46)
+    center_text(ip_address if wifi_state == "online" else "Wi-Fi not connected", 46)
     screen.font = SMALL_FONT
     screen.brush = WHITE
-    center_text("PORT %d" % SERVER_PORT, 76)
+    center_text("Port %d | C: close" % SERVER_PORT, 76)
     screen.brush = MUTED
     center_text(
         "DOWN: CLEAR %d TRUSTED" % len(trusted_devices),
@@ -1116,7 +1121,7 @@ def draw_pairing_overlay():
     screen.clear()
     screen.font = SMALL_FONT
     screen.brush = MUTED
-    center_text("PAIR NEW CONTROLLER", 8)
+    center_text("PAIR YOUR LAPTOP", 8)
     screen.brush = WHITE
     center_text(pending_pairing["name"], 27)
     screen.font = TITLE_FONT
@@ -1178,6 +1183,10 @@ def draw_ui():
 
     screen.brush = background
     screen.clear()
+    # Small corner accents leave the main status uncluttered.
+    screen.brush = accent
+    screen.draw(shapes.line(143, 5, 154, 5, 1))
+    screen.draw(shapes.line(154, 5, 154, 16, 1))
 
     if current_status == "meeting":
         draw_meeting()
@@ -1207,15 +1216,15 @@ def draw_ui():
             screen.brush = accent
             center_text(current_note, 105)
 
-    if wifi_state != "online":
+    if not current_note and current_status != "custom":
         screen.font = SMALL_FONT
         screen.brush = MUTED
-        connection_text = (
-            "Set WiFi in secrets.py"
-            if wifi_state == "missing config"
-            else "WiFi: " + wifi_state
-        )
-        center_text(connection_text, 111)
+        hint = "A: next  C: connect"
+        if 0 <= io.ticks - last_b_press <= DOUBLE_B_WINDOW_MS:
+            hint = "B again: power off"
+        elif wifi_state == "missing config":
+            hint = "Set WiFi in secrets.py"
+        center_text(hint, 108)
 
     # A brief accent frame confirms a remote status update without boxing in
     # the status screen during normal use.
@@ -1223,6 +1232,11 @@ def draw_ui():
         screen.brush = accent
         screen.draw(shapes.rounded_rectangle(5, 5, 150, 110, 5).stroke(2))
 
+    screen.brush = background
+    screen.draw(shapes.rectangle(60, 0, 62, 13))
+    screen.font = SMALL_FONT
+    screen.brush = MUTED
+    screen.text("LINK" if wifi_state == "online" else "NO WIFI", 65, 4)
     draw_battery_indicator()
 
 
@@ -1311,7 +1325,8 @@ def update():
             save_status()
 
         if io.BUTTON_C in io.pressed:
-            show_address_until = io.ticks + 8000
+            show_address_until = (0 if io.ticks < show_address_until
+                                  else io.ticks + 8000)
 
         if io.BUTTON_DOWN in io.pressed and io.ticks < show_address_until:
             show_address_until = 0

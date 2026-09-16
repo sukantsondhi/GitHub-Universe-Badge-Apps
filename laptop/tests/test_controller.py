@@ -162,11 +162,11 @@ class ControllerTests(unittest.TestCase):
     def test_window_geometry_fits_common_laptop_display(self):
         self.assertEqual(
             fitted_window_geometry(1366, 768),
-            "1080x672+143+48",
+            "1180x672+93+48",
         )
         self.assertEqual(
             fitted_window_geometry(800, 600),
-            "720x504+40+48",
+            "800x504+0+48",
         )
 
     def test_x25519_matches_rfc_public_key_vector(self):

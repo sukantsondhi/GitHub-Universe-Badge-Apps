@@ -317,7 +317,7 @@ class BadgeProtocolTests(unittest.TestCase):
         }
         fake_badgeware.screen.texts = []
         badge.draw_ui()
-        self.assertIn("PAIR NEW CONTROLLER", fake_badgeware.screen.texts)
+        self.assertIn("PAIR YOUR LAPTOP", fake_badgeware.screen.texts)
         self.assertIn("123 456", fake_badgeware.screen.texts)
         self.assertIn("UP: APPROVE", fake_badgeware.screen.texts)
         self.assertIn("DOWN: REJECT", fake_badgeware.screen.texts)
@@ -343,10 +343,9 @@ class BadgeProtocolTests(unittest.TestCase):
                     else badge.STATUS_LABELS[status]
                 )
                 self.assertIn(expected, fake_badgeware.screen.texts)
-                self.assertFalse(any(
-                    text.startswith("A:") or text.startswith("C:")
-                    for text in fake_badgeware.screen.texts
-                ))
+                self.assertIn("LINK", fake_badgeware.screen.texts)
+                if status != "custom" and not badge.current_note:
+                    self.assertIn("A: next  C: connect", fake_badgeware.screen.texts)
                 self.assertIn("75%", fake_badgeware.screen.texts)
 
     def test_c_button_address_overlay_draws(self):

@@ -284,38 +284,48 @@ def render_currency():
     screen.save("currency.png")
 
 
-def capture_laptop():
+def capture_laptop(theme="dark", custom=False):
+    """Capture the real dashboard using isolated, non-networked sample data."""
     import tkinter as tk
+    from unittest.mock import patch
 
     sys.path.insert(0, str(ROOT / "laptop"))
     import work_status_controller as controller
 
-    with tempfile.TemporaryDirectory() as temp:
-        controller.CONFIG_PATH = Path(temp) / "profiles.json"
-        controller.LEGACY_CONFIG_PATH = Path(temp) / "legacy.json"
+    config = controller.normalize_config({})
+    config["theme"] = theme
+    identity = {"id": "ab" * 16, "name": "Preview", "keys": {}}
+    with patch.object(controller, "load_config", return_value=config), \
+         patch.object(controller, "load_device_config", return_value=identity), \
+         patch.object(controller, "save_config"), \
+         patch.object(controller, "save_device_config"):
         root = tk.Tk()
-        app = controller.WorkStatusController(root)
-        app.device_var.set("Home Office")
-        app.profile_name_var.set("Home Office")
-        app.address_var.set("192.168.1.42:8080")
-        app.current_var.set("FOCUS  /  HOME OFFICE")
-        app.hero.itemconfigure(app.current_badge, text=app.current_var.get())
-        app._update_battery_display({"battery": 82, "charging": False})
-        app.hero.itemconfigure(
-            app.current_status_display, text="FOCUS", fill="#a371f7",
-        )
-        app._set_connection_indicator("connected", "CONNECTED")
-        app.connection_var.set("Connected. Badge status loaded.")
-        app.connection_label.configure(fg="#3fb950")
-        root.update_idletasks()
-        root.update()
-        x, y = root.winfo_rootx(), root.winfo_rooty()
-        w, h = root.winfo_width(), root.winfo_height()
-        OUTPUT.mkdir(parents=True, exist_ok=True)
-        ImageGrab.grab((x, y, x + w, y + h)).save(
-            OUTPUT / "laptop-controller.png", optimize=True,
-        )
-        root.destroy()
+        try:
+            app = controller.WorkStatusController(root)
+            app.device_var.set("Home office")
+            app.profile_name_var.set("Home office")
+            app.address_var.set("192.168.1.42:8080")
+            app._request_succeeded(
+                {"status": "focus", "note": "Back at 14:30", "battery": 82},
+                "Focus mode is on. Your badge is up to date.",
+            )
+            if custom:
+                app._show_composer(True)
+            root.attributes("-topmost", True)
+            root.lift()
+            root.update()
+            app._apply_responsive_layout()
+            root.after(350, root.quit)
+            root.mainloop()
+            x, y = root.winfo_rootx(), root.winfo_rooty()
+            w, h = root.winfo_width(), root.winfo_height()
+            OUTPUT.mkdir(parents=True, exist_ok=True)
+            name = "laptop-custom.png" if custom else "laptop-controller.png"
+            ImageGrab.grab((x, y, x + w, y + h)).save(OUTPUT / name, optimize=True)
+        finally:
+            for timer in root.tk.call("after", "info"):
+                root.after_cancel(timer)
+            root.destroy()
 
 
 def render_icon():
