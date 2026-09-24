@@ -918,6 +918,8 @@ class WorkStatusController:
         self.photo_upload_button = button(self.photo_shell, "Display photo on badge",
                                           self.send_photo, True)
         self.photo_upload_button.pack(fill="x", pady=(10, 3))
+        if self.photo_source is None:
+            self.photo_upload_button.configure(state=tk.DISABLED)
         self.photo_progress_label = tk.Label(self.photo_shell, textvariable=self.photo_progress_var,
                                              bg=p["panel"], fg=p["muted"], anchor="w",
                                              font=("Segoe UI", 9))
