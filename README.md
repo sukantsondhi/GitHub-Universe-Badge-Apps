@@ -1,7 +1,7 @@
 # GitHub Universe 2025 Badge Projects
 
 Small, practical apps for the GitHub Universe 2025 badge: a location-aware
-desk clock, a fast currency board, and a network-controlled work-status sign.
+desk clock, a fast currency board, a photo frame, and a network-controlled work-status sign.
 
 > [!IMPORTANT]
 > These apps target **[Mona-OS v4.03](https://github.com/badger/home/releases/tag/mona-os-v4.03)**,
@@ -12,12 +12,13 @@ desk clock, a fast currency board, and a network-controlled work-status sign.
 
 | App | What it does | Network |
 | --- | --- | --- |
-| [Work Status](#work-status) | Turns the badge into a remotely controlled door sign | Required while using the laptop controller |
+| [Work Status](#work-status) | Remote door sign and laptop-controlled photo frame | Required while using the laptop controller |
+| [Photo Frame](#photo-frame) | Upload pictures from your phone, tablet or computer over local Wi-Fi | Required while using Photo Frame |
 | [Desk Clock](#desk-clock) | Analog or digital local clock with automatic timezone detection | Required for initial/scheduled sync |
 | [Currency Board](#currency-board) | Shows the current value of USD in GBP and INR | Required for rate updates |
 
 The other folders under `apps/` are the standard Mona-OS applications kept in
-this working tree for compatibility and hardware testing. The three apps above
+this working tree for compatibility and hardware testing. The four apps above
 are the custom projects documented and maintained here.
 
 ## Install an app on the badge
@@ -34,6 +35,7 @@ Each installable app is a complete folder containing `__init__.py` and a
    - `apps/desk-clock`
    - `apps/currency`
    - `apps/work-status`
+   - `apps/photo-frame`
 
 6. If Wi-Fi is not configured, copy `secrets.example.py` to the root of the
    badge as `secrets.py`, then add the SSID and password.
@@ -86,7 +88,8 @@ The dashboard provides:
 3. a hidden IP field with explicit show/hide controls;
 4. six preset status buttons and an optional 24-character note;
 5. a custom status editor with colour, symbol, text, and live preview;
-6. non-blocking network requests and clear connecting/success/error feedback.
+6. a **Photo frame** tab with local image picker, 4:3 crop/drag/zoom, picture preview and direct authenticated send;
+7. non-blocking network requests and clear connecting/success/error feedback.
 
 Setup:
 
@@ -99,9 +102,16 @@ Setup:
 5. Give it a name, select **Save**, and then **Connect**.
 6. Check that the six-digit code matches on both screens, then press **UP** on
    the badge to approve this controller.
-7. Select a preset or create a custom status.
+7. Select a preset, create a custom status, or select **Photo frame**, choose an image, crop it and click **Display photo on badge**.
+8. After displaying a picture, click any status tile to restore the status screen without restarting the badge.
 
-The controller is dependency-free and stores profiles in
+The standard status controls are dependency-free. **Photo editing needs Pillow:** run
+`python -m pip install Pillow` on the Windows PC using the same Python installation
+that launches `Work Status.pyw`. The app supports common JPEG, PNG and WebP images
+when Pillow can decode them. It converts the selected image to a compact, indexed
+160×120 PNG before sending it; pictures never leave the home network.
+
+The controller stores profiles in
 `laptop/badge_profiles.json`. That file may contain private LAN addresses and
 is intentionally ignored by Git.
 
@@ -114,6 +124,28 @@ The Windows dashboard automatically fits the current screen. Use **Full
 Screen** (or **F11**) for a responsive borderless view, and **Desktop Widget**
 for a compact always-on-top controller.
 
+
+## Photo Frame
+
+Photo Frame is also available as a **separate Mona-OS app**, imported from
+[GitHub Badge Photo Frame](https://github.com/sukantsondhi/GitHub-Badge-Photo-Frame).
+Copy `apps/photo-frame` (including `icon.png` and `web/`) onto the badge, launch
+it and press **C** to see its Wi-Fi address. Enter that address in your phone or
+tablet browser to open the local photo editor and pair using the six-digit
+confirmation code on the badge. The standalone app and Work Status run
+**separately**, so keep the app you want to control open.
+
+**For laptop use, you do not need to switch to standalone Photo Frame.** The
+updated Work Status badge app supports the same photo upload protocol, and the
+Windows controller reuses your existing Work Status pairing to select and
+display a photo directly. Your existing saved badge profiles and the established
+pairing remain intact.
+
+The badge's current 160×120 logical framebuffer is best served by a cropped PNG.
+Photo uploads use 768-byte HMAC-authenticated chunks and SHA-256 verification
+before the badge switches to picture mode. Wi-Fi is local HTTP and **not
+encrypted**: use only a trusted WPA2/WPA3 home LAN. Saving/displaying photos
+on Mona-OS still requires final validation on your physical badge.
 
 ## Desk Clock
 
