@@ -374,10 +374,10 @@ class BadgeProtocolTests(unittest.TestCase):
             hashlib.sha256,
         ).hexdigest()
         head = (
-            "%s %s%s HTTP/1.1\\r\\nHost: badge\\r\\n"
-            "Content-Length: %d\\r\\n"
-            "X-Work-Device: %s\\r\\nX-Work-Nonce: %s\\r\\n"
-            "X-Work-Signature: %s\\r\\n\\r\\n"
+            "%s %s%s HTTP/1.1\r\nHost: badge\r\n"
+            "Content-Length: %d\r\n"
+            "X-Work-Device: %s\r\nX-Work-Nonce: %s\r\n"
+            "X-Work-Signature: %s\r\n\r\n"
         ) % (method, path, query, len(body), DEVICE_ID, nonce, signature)
         return badge.handle_request(head.encode("ascii") + body)
 
@@ -390,9 +390,9 @@ class BadgeProtocolTests(unittest.TestCase):
         self.assertFalse(response_json(good)["has_photo"])
 
     def test_authenticated_photo_upload_switches_back_to_status(self):
-        png = (b"\\x89PNG\\r\\n\\x1a\\n" + b"\\x00" * 4 +
+        png = (b"\x89PNG\r\n\x1a\n" + b"\x00" * 4 +
                b"IHDR" + (160).to_bytes(4, "big") +
-               (120).to_bytes(4, "big") + b"\\x08\\x03")
+               (120).to_bytes(4, "big") + b"\x08\x03")
         with tempfile.TemporaryDirectory() as folder:
             old_paths = (badge.PHOTO_TEMP, badge.PHOTO_A, badge.PHOTO_B)
             try:
