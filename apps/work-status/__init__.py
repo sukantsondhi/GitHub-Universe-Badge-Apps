@@ -15,6 +15,7 @@ from badgeware import (
     shapes,
     screen,
     PixelFont,
+    Image,
     get_battery_level,
     is_charging,
     run,
@@ -23,7 +24,7 @@ from badgeware import (
 
 APP_DIR = "/system/apps/work-status"
 SERVER_PORT = 8080
-MAX_REQUEST_BYTES = 1024
+MAX_REQUEST_BYTES = 4096
 CLIENT_TIMEOUT_MS = 1500
 WIFI_RETRY_MS = 15000
 FRAME_DELAY_MS = 100
@@ -44,6 +45,7 @@ STATUS_LABELS = {
     "lunch": "LUNCH BREAK",
     "sleep": "OFFLINE",
     "custom": "CUSTOM",
+    "photo": "PHOTO FRAME",
 }
 CUSTOM_SYMBOLS = (
     "star", "heart", "check", "alert", "coffee", "door", "code", "bolt"
@@ -501,6 +503,7 @@ def status_payload():
     refresh_battery_status()
     return {
         "status": current_status,
+        "photo": bool(photo_filename),
         "note": current_note,
         "custom_text": custom_text,
         "custom_symbol": custom_symbol,
@@ -724,6 +727,138 @@ def make_response(code, payload, auth_key=None, auth_nonce=""):
     return headers.encode("utf-8") + body
 
 
+# Photo content is intentionally local to this app. Both image slots are kept
+# until the replacement PNG has been validated and stored successfully.
+PHOTO_MAX_BYTES = 98304
+PHOTO_CHUNK_MAX = 768
+PHOTO_TEMP = APP_DIR + "/photo-upload.png"
+PHOTO_A = APP_DIR + "/photo-a.png"
+PHOTO_B = APP_DIR + "/photo-b.png"
+photo_image = None
+photo_filename = ""
+photo_upload = None
+
+
+def photo_status():
+    return {
+        "ready": wifi_state == "online",
+        "has_photo": bool(photo_filename),
+        "width": 160, "height": 120,
+        "max_bytes": PHOTO_MAX_BYTES,
+        "chunk_bytes": PHOTO_CHUNK_MAX,
+    }
+
+
+def photo_request(method, path, query, body, headers):
+    global photo_upload, photo_image, photo_filename, current_status
+    controller = headers.get("x-work-device", "")
+    if path == "/api/frame" and method == "GET":
+        return 200, photo_status()
+    if path == "/api/frame/start" and method == "POST":
+        if photo_upload is not None and photo_upload["owner"] != controller:
+            return 409, {"error": "another controller is uploading"}
+        try:
+            message = json.loads(body.decode("utf-8"))
+            size = message["size"]
+            digest = message["sha256"]
+            if (not isinstance(size, int) or isinstance(size, bool)
+                    or size < 24 or size > PHOTO_MAX_BYTES
+                    or not isinstance(digest, str) or len(digest) != 64
+                    or any(ch not in "0123456789abcdef" for ch in digest)):
+                raise ValueError("invalid image metadata")
+        except Exception:
+            return 400, {"error": "invalid size or checksum"}
+        try:
+            with open(PHOTO_TEMP, "wb") as output:
+                pass
+            photo_upload = {
+                "owner": controller, "size": size, "sha256": digest,
+                "written": 0, "hash": hashlib.sha256(),
+            }
+            return 200, {"offset": 0}
+        except Exception:
+            return 500, {"error": "storage not writable"}
+    if path == "/api/frame/chunk" and method == "POST":
+        transfer = photo_upload
+        try:
+            offset = int(query.get("offset", "-1"))
+        except Exception:
+            return 400, {"error": "invalid offset"}
+        if (transfer is None or transfer["owner"] != controller
+                or offset != transfer["written"] or not body
+                or len(body) > PHOTO_CHUNK_MAX
+                or offset + len(body) > transfer["size"]):
+            return 409, {"error": "invalid transfer offset or size"}
+        try:
+            with open(PHOTO_TEMP, "ab") as output:
+                output.write(body)
+            transfer["hash"].update(body)
+            transfer["written"] += len(body)
+            return 200, {"offset": transfer["written"]}
+        except Exception:
+            photo_upload = None
+            return 500, {"error": "image write failed"}
+    if path == "/api/frame/finish" and method == "POST":
+        transfer = photo_upload
+        if (transfer is None or transfer["owner"] != controller
+                or transfer["written"] != transfer["size"]):
+            return 409, {"error": "transfer incomplete"}
+        photo_upload = None
+        if hexlify(transfer["hash"].digest()) != transfer["sha256"]:
+            return 400, {"error": "image checksum mismatch"}
+        try:
+            with open(PHOTO_TEMP, "rb") as source:
+                header = source.read(26)
+            if (header[:8] != b"\x89PNG\r\n\x1a\n"
+                    or header[12:16] != b"IHDR"
+                    or int.from_bytes(header[16:20], "big") != 160
+                    or int.from_bytes(header[20:24], "big") != 120
+                    or header[25] not in (2, 3, 6)):
+                return 400, {"error": "expected a 160x120 RGB/RGBA PNG"}
+            previous = photo_filename
+            photo_image = None
+            gc.collect()
+            candidate = Image.load(PHOTO_TEMP)
+            if candidate is None:
+                raise ValueError("image decoder returned no image")
+            target = PHOTO_B if previous == "photo-a.png" else PHOTO_A
+            try:
+                os.remove(target)
+            except OSError:
+                pass
+            os.rename(PHOTO_TEMP, target)
+            photo_filename = target.rsplit("/", 1)[-1]
+            photo_image = candidate
+            State.save("work_status_photo_current", {"file": photo_filename})
+            current_status = "photo"
+            save_status()
+            gc.collect()
+            return 200, {"displayed": True, "has_photo": True}
+        except Exception as error:
+            print("Photo display failed:", error)
+            try:
+                photo_image = Image.load(APP_DIR + "/" + previous) if previous else None
+            except Exception:
+                photo_image = None
+            return 500, {"error": "badge could not decode or save this PNG"}
+    return 404, {"error": "not found"}
+
+
+def load_photo():
+    global photo_image, photo_filename
+    data = {"file": ""}
+    try:
+        if State.load("work_status_photo_current", data):
+            name = data.get("file", "")
+            if name in ("photo-a.png", "photo-b.png"):
+                photo_image = Image.load(APP_DIR + "/" + name)
+                photo_filename = name
+    except Exception as error:
+        print("Could not load saved photo:", error)
+        photo_image = None
+        photo_filename = ""
+
+
 def handle_request(raw_request):
     global current_status, current_note, notification_until
     global custom_text, custom_symbol, custom_color
@@ -781,6 +916,13 @@ def handle_request(raw_request):
             return make_response(405, {"error": "method not allowed"})
         code, payload = issue_challenge(query_values.get("device_id", ""))
         return make_response(code, payload)
+
+    if path.startswith("/api/frame"):
+        auth_key = authorize_request(method, path, body, headers)
+        if auth_key is None:
+            return make_response(401, {"error": "authentication failed"})
+        code, payload = photo_request(method, path, query_values, body, headers)
+        return make_response(code, payload, auth_key, headers["x-work-nonce"])
 
     if path != "/api/status":
         return make_response(404, {"error": "not found"})
@@ -906,7 +1048,9 @@ def service_http():
             client_buffer += chunk
             if len(client_buffer) > MAX_REQUEST_BYTES:
                 try:
-                    client_socket.send(make_response(413, {"error": "request too large"}))
+                    client_socket.setblocking(True)
+                    client_socket.settimeout(3)
+                    client_socket.sendall(make_response(413, {"error": "request too large"}))
                 except Exception:
                     pass
                 close_client()
@@ -924,7 +1068,9 @@ def service_http():
     if request_is_complete(client_buffer):
         response = handle_request(client_buffer)
         try:
-            client_socket.send(response)
+            client_socket.setblocking(True)
+            client_socket.settimeout(3)
+            client_socket.sendall(response)
         except Exception as error:
             print("HTTP response failed:", error)
         close_client()
@@ -1166,6 +1312,12 @@ def draw_ui():
         draw_address_overlay()
         return
 
+    if current_status == "photo" and photo_image is not None:
+        screen.brush = BLACK
+        screen.clear()
+        screen.blit(photo_image, 0, 0)
+        return
+
     if current_status == "meeting":
         background, accent = RED_DARK, RED
     elif current_status == "focus":
@@ -1291,7 +1443,7 @@ def init():
     }
     try:
         if State.load("work_status", saved):
-            if saved.get("status") in STATUS_ORDER:
+            if saved.get("status") in STATUS_ORDER or saved.get("status") == "photo":
                 current_status = saved["status"]
             current_note = clean_note(saved.get("note", ""))
             custom_text = clean_note(saved.get("custom_text", "HELLO")) or "CUSTOM"
@@ -1304,6 +1456,7 @@ def init():
     refresh_custom_brushes()
     load_trusted_devices()
     load_wifi_config()
+    load_photo()
     gc.collect()
 
 
@@ -1319,7 +1472,8 @@ def update():
             reject_pending_pairing()
     else:
         if io.BUTTON_A in io.pressed:
-            index = (STATUS_ORDER.index(current_status) + 1) % len(STATUS_ORDER)
+            index = ((STATUS_ORDER.index(current_status) + 1) % len(STATUS_ORDER)
+                     if current_status in STATUS_ORDER else 0)
             current_status = STATUS_ORDER[index]
             current_note = ""
             save_status()
