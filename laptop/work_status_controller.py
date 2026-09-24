@@ -2187,6 +2187,133 @@ class WorkStatusController:
             "Custom status sent to badge.",
         )
 
+    def choose_photo(self) -> None:
+        """Choose a local photo; no network transfer occurs until Send."""
+        if self.busy:
+            return
+        filename = filedialog.askopenfilename(
+            parent=self.root,
+            title="Choose a badge photo",
+            filetypes=[
+                ("Pictures", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not filename:
+            return
+        try:
+            self.photo_source = photo_tools.open_photo(filename)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.photo_source = None
+            self.photo_upload_button.configure(state=tk.DISABLED)
+            self._show_error(str(exc))
+            return
+        self.photo_zoom_var.set(1.0)
+        self.photo_pan_x = self.photo_pan_y = 0.0
+        self.photo_name_var.set(Path(filename).name)
+        self.photo_progress_var.set("Ready to send. Drag to crop, or adjust zoom.")
+        self.photo_upload_button.configure(state=tk.NORMAL)
+        self._draw_photo_preview()
+
+    def _cropped_photo(self):
+        if self.photo_source is None:
+            raise ValueError("Choose a photo first.")
+        return photo_tools.crop_photo(
+            self.photo_source, self.photo_zoom_var.get(),
+            self.photo_pan_x, self.photo_pan_y,
+        )
+
+    def _draw_photo_preview(self) -> None:
+        canvas = getattr(self, "photo_preview", None)
+        if canvas is None or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        width = max(320, canvas.winfo_width())
+        height = max(140, canvas.winfo_height())
+        if self.photo_source is None:
+            canvas.create_text(width / 2, height / 2 - 12,
+                               text="YOUR PHOTO, YOUR BADGE",
+                               fill="#acd0ff", font=("Segoe UI Semibold", 13))
+            canvas.create_text(width / 2, height / 2 + 12,
+                               text="Choose a picture to see your 4:3 preview",
+                               fill="#839ab8", font=("Segoe UI", 10))
+            return
+        try:
+            _, _, ImageTk = photo_tools.pillow()
+            cropped = self._cropped_photo()
+            scale = min((width - 12) / 160, (height - 12) / 120)
+            size = (max(1, int(160 * scale)), max(1, int(120 * scale)))
+            self.photo_preview_image = ImageTk.PhotoImage(
+                cropped.resize(size, photo_tools.pillow()[0].Resampling.NEAREST),
+                master=self.root,
+            )
+            canvas.create_image(width / 2, height / 2,
+                                image=self.photo_preview_image, anchor="center")
+            canvas.create_rectangle(width / 2 - size[0] / 2 - 1,
+                                    height / 2 - size[1] / 2 - 1,
+                                    width / 2 + size[0] / 2 + 1,
+                                    height / 2 + size[1] / 2 + 1,
+                                    outline="#73aaff", width=1)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.photo_progress_var.set(str(exc))
+
+    def _draw_photo_thumbnail(self, canvas, width: int, height: int) -> None:
+        try:
+            Image, _, ImageTk = photo_tools.pillow()
+            scale = min((width - 8) / 160, (height - 8) / 120)
+            size = (max(1, int(160 * scale)), max(1, int(120 * scale)))
+            self.photo_thumb_image = ImageTk.PhotoImage(
+                self._cropped_photo().resize(size, Image.Resampling.NEAREST),
+                master=self.root,
+            )
+            canvas.create_image(width / 2, height / 2,
+                                image=self.photo_thumb_image)
+        except (OSError, ValueError, RuntimeError):
+            canvas.create_text(width / 2, height / 2, text="PHOTO FRAME",
+                               fill="#80b5ff", font=("Segoe UI Semibold", 10))
+
+    def _photo_zoom_changed(self, _value) -> None:
+        self.photo_zoom_label.configure(text="Zoom %.2fx" %
+                                        self.photo_zoom_var.get())
+        self._draw_photo_preview()
+
+    def _start_photo_drag(self, event) -> None:
+        if self.photo_source is not None and not self.busy:
+            self.photo_drag = (event.x, event.y, self.photo_pan_x, self.photo_pan_y)
+
+    def _drag_photo(self, event) -> None:
+        if self.photo_drag is None or self.photo_source is None or self.busy:
+            return
+        width = max(160, self.photo_preview.winfo_width())
+        height = max(120, self.photo_preview.winfo_height())
+        scale = min((width - 12) / 160, (height - 12) / 120)
+        x, y, original_x, original_y = self.photo_drag
+        self.photo_pan_x = original_x + (event.x - x) / max(scale, 0.01)
+        self.photo_pan_y = original_y + (event.y - y) / max(scale, 0.01)
+        self._draw_photo_preview()
+
+    def send_photo(self) -> None:
+        if self.busy:
+            return
+        if not self._has_pairing_key():
+            self._show_error("Select Connect and approve pairing first.")
+            return
+        try:
+            payload = photo_tools.encode_badge_png(self._cropped_photo())
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._show_error(str(exc))
+            return
+        self.photo_progress_var.set("Preparing authenticated photo transfer...")
+        self._run_request(
+            lambda client: client.send_photo(
+                payload,
+                progress=lambda percent: self.result_queue.put(
+                    ("photo_progress", percent, ""),
+                ),
+            ),
+            "Photo displayed on badge. Select a status to return to Work Status.",
+        )
+
     def _close(self) -> None:
         self.closing = True
         self._persist_profiles()
