@@ -146,7 +146,7 @@ class ControllerTests(unittest.TestCase):
         requests = []
         progress = []
 
-        def signed(path, method, body=b"", query="", content_type="application/json"):
+        def signed(path, method, body=b"", query="", content_type="application/json", timeout=2.5):
             requests.append((path, method, body, query, content_type))
             if path == "/api/frame/chunk":
                 offset = int(query.split("=")[1])
