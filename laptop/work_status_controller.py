@@ -329,7 +329,7 @@ class BadgeClient:
                 raise RuntimeError("Photo transfer offset differs from badge.")
             if progress is not None:
                 progress(round(sent / len(png) * 95))
-        answer = self._signed_request("/api/frame/finish", "POST", b"{}")
+        answer = self._signed_request("/api/frame/finish", "POST", b"{}", timeout=12.0)
         if answer.get("displayed") is not True:
             raise RuntimeError("Badge did not confirm that it displayed the photo.")
         if progress is not None:
@@ -397,6 +397,7 @@ class BadgeClient:
         body: bytes = b"",
         query: str = "",
         content_type: str = "application/json",
+        timeout: float = REQUEST_TIMEOUT,
     ) -> dict:
         if not self.device_id or self.device_key is None:
             raise PairingRequired("Pair this controller before connecting.")
@@ -434,6 +435,7 @@ class BadgeClient:
             ),
             response_key=self.device_key,
             response_nonce=nonce,
+            timeout=timeout,
         )
 
     @staticmethod
@@ -980,12 +982,9 @@ class WorkStatusController:
         status = payload.get("status", "available")
         if status == "photo":
             canvas.configure(bg="#0e1c35")
-            if self.photo_source is not None:
-                self._draw_photo_thumbnail(canvas, width, height)
-            else:
-                canvas.create_text(width / 2, height / 2,
-                                   text="PHOTO FRAME ACTIVE",
-                                   fill="#80b5ff", font=("Segoe UI Semibold", 10))
+            canvas.create_text(width / 2, height / 2,
+                               text="PHOTO FRAME ACTIVE",
+                               fill="#80b5ff", font=("Segoe UI Semibold", 10))
             return
         palettes = {
             "available": ("#080a0f", "#2ebe5c"),
@@ -2128,6 +2127,8 @@ class WorkStatusController:
             )
         self._persist_profiles()
         self._set_busy(False, success_message)
+        if success_message.startswith("Photo displayed"):
+            self.photo_progress_var.set("Photo displayed successfully on the badge.")
         self.connection_label.configure(fg="#18793b" if self.theme_name == "light" else "#56d364")
         self._set_connection_indicator("connected", "CONNECTED")
         self._highlight_current()
