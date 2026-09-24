@@ -78,6 +78,38 @@ class DashboardTests(unittest.TestCase):
                              self.app.activity_shell.winfo_rooty())
         self.assertFalse(self.app.profile_editor.winfo_ismapped())
 
+    def test_photo_tab_is_integrated_and_controls_fit(self):
+        self.root.geometry("820x620")
+        self.app._show_composer("photo")
+        self.root.update()
+        self.app._apply_responsive_layout()
+        self.root.update()
+        self.assertTrue(self.app.photo_shell.winfo_ismapped())
+        self.assertFalse(self.app.status_shell.winfo_ismapped())
+        self.assertFalse(self.app.custom_shell.winfo_ismapped())
+        upload = self.app.photo_upload_button
+        self.assertTrue(upload.winfo_ismapped())
+        self.assertLessEqual(
+            upload.winfo_rooty() + upload.winfo_height(),
+            self.app.activity_shell.winfo_rooty(),
+        )
+        self.assertEqual(str(upload["state"]), "disabled")
+
+    def test_photo_tab_and_unsent_crop_survive_theme_change(self):
+        from PIL import Image
+        self.app.photo_source = Image.new("RGB", (640, 480), "#3184cf")
+        self.app._show_composer("photo")
+        self.app.toggle_theme()
+        self.root.update()
+        self.assertTrue(self.app.photo_shell.winfo_ismapped())
+        self.assertEqual(self.app.photo_source.size, (640, 480))
+        self.app._request_succeeded(
+            {"status": "photo", "battery": 75, "photo": True},
+            "Photo displayed",
+        )
+        self.assertEqual(self.app.current_status, "photo")
+        self.assertIn("PHOTO FRAME", self.app.current_var.get())
+
     def test_custom_tab_survives_theme_change(self):
         self.app._show_composer(True)
         self.app.custom_text_var.set("Building something")
