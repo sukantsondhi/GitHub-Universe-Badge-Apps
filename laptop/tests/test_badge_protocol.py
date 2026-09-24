@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -68,6 +69,9 @@ class FakeScreen:
     def clear(self):
         pass
 
+    def blit(self, _image, _x, _y):
+        pass
+
 
 fake_io = types.SimpleNamespace(
     ticks=0,
@@ -83,6 +87,12 @@ fake_io = types.SimpleNamespace(
     BUTTON_UP=3,
     BUTTON_DOWN=4,
 )
+class FakeImage:
+    @staticmethod
+    def load(_path):
+        return types.SimpleNamespace(width=160, height=120)
+
+
 fake_badgeware = types.SimpleNamespace(
     State=FakeState,
     io=fake_io,
@@ -90,6 +100,7 @@ fake_badgeware = types.SimpleNamespace(
     shapes=FakeShapes(),
     screen=FakeScreen(),
     PixelFont=FakePixelFont,
+    Image=FakeImage,
     get_battery_level=lambda: 75,
     is_charging=lambda: False,
     run=lambda *_args, **_kwargs: None,
@@ -152,6 +163,9 @@ class BadgeProtocolTests(unittest.TestCase):
     def setUp(self):
         fake_io.ticks = 0
         badge.current_status = "available"
+        badge.photo_image = None
+        badge.photo_filename = ""
+        badge.photo_upload = None
         badge.current_note = ""
         badge.custom_text = "HELLO"
         badge.custom_symbol = "star"
@@ -347,6 +361,85 @@ class BadgeProtocolTests(unittest.TestCase):
                 if status != "custom" and not badge.current_note:
                     self.assertIn("A: next  C: connect", fake_badgeware.screen.texts)
                 self.assertIn("75%", fake_badgeware.screen.texts)
+
+
+    def photo_command(self, method, path, body=b"", query=""):
+        challenge = badge.handle_request(request_bytes(
+            "GET", path="/api/challenge?device_id=" + DEVICE_ID,
+        ))
+        nonce = response_json(challenge)["nonce"]
+        signature = hmac.new(
+            DEVICE_KEY,
+            badge.auth_message(method, path, nonce, body),
+            hashlib.sha256,
+        ).hexdigest()
+        head = (
+            "%s %s%s HTTP/1.1\\r\\nHost: badge\\r\\n"
+            "Content-Length: %d\\r\\n"
+            "X-Work-Device: %s\\r\\nX-Work-Nonce: %s\\r\\n"
+            "X-Work-Signature: %s\\r\\n\\r\\n"
+        ) % (method, path, query, len(body), DEVICE_ID, nonce, signature)
+        return badge.handle_request(head.encode("ascii") + body)
+
+    def test_photo_requires_existing_work_status_pairing(self):
+        raw = request_bytes("POST", {"size": 100, "sha256": "a" * 64},
+                            path="/api/frame/start")
+        self.assertTrue(badge.handle_request(raw).startswith(b"HTTP/1.1 401"))
+        good = self.photo_command("GET", "/api/frame")
+        self.assertTrue(good.startswith(b"HTTP/1.1 200"))
+        self.assertFalse(response_json(good)["has_photo"])
+
+    def test_authenticated_photo_upload_switches_back_to_status(self):
+        png = (b"\\x89PNG\\r\\n\\x1a\\n" + b"\\x00" * 4 +
+               b"IHDR" + (160).to_bytes(4, "big") +
+               (120).to_bytes(4, "big") + b"\\x08\\x03")
+        with tempfile.TemporaryDirectory() as folder:
+            old_paths = (badge.PHOTO_TEMP, badge.PHOTO_A, badge.PHOTO_B)
+            try:
+                badge.PHOTO_TEMP = os.path.join(folder, "upload.png")
+                badge.PHOTO_A = os.path.join(folder, "photo-a.png")
+                badge.PHOTO_B = os.path.join(folder, "photo-b.png")
+                metadata = json.dumps({
+                    "size": len(png),
+                    "sha256": hashlib.sha256(png).hexdigest(),
+                }).encode()
+                start = self.photo_command(
+                    "POST", "/api/frame/start", metadata)
+                self.assertTrue(start.startswith(b"HTTP/1.1 200"))
+                chunk = self.photo_command(
+                    "POST", "/api/frame/chunk", png, "?offset=0")
+                self.assertEqual(response_json(chunk)["offset"], len(png))
+                finish = self.photo_command(
+                    "POST", "/api/frame/finish", b"{}")
+                self.assertTrue(finish.startswith(b"HTTP/1.1 200"))
+                self.assertEqual(badge.current_status, "photo")
+                self.assertTrue(os.path.exists(badge.PHOTO_A))
+                self.assertTrue(badge.status_payload()["photo"])
+                badge.draw_ui()
+                response = badge.handle_request(authenticated_request(
+                    "POST", {"status": "focus", "note": ""}))
+                self.assertTrue(response.startswith(b"HTTP/1.1 200"))
+                self.assertEqual(badge.current_status, "focus")
+            finally:
+                badge.PHOTO_TEMP, badge.PHOTO_A, badge.PHOTO_B = old_paths
+
+    def test_photo_rejects_wrong_transfer_checksum(self):
+        with tempfile.TemporaryDirectory() as folder:
+            old = badge.PHOTO_TEMP
+            badge.PHOTO_TEMP = os.path.join(folder, "incoming.png")
+            try:
+                metadata = json.dumps({"size": 24, "sha256": "0" * 64}).encode()
+                self.assertTrue(self.photo_command(
+                    "POST", "/api/frame/start", metadata).startswith(b"HTTP/1.1 200"))
+                self.assertTrue(self.photo_command(
+                    "POST", "/api/frame/chunk", b"x" * 24, "?offset=0"
+                ).startswith(b"HTTP/1.1 200"))
+                self.assertTrue(self.photo_command(
+                    "POST", "/api/frame/finish", b"{}"
+                ).startswith(b"HTTP/1.1 400"))
+                self.assertEqual(badge.current_status, "available")
+            finally:
+                badge.PHOTO_TEMP = old
 
     def test_c_button_address_overlay_draws(self):
         badge.wifi_state = "online"
