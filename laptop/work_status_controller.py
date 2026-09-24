@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import binascii
+import photo_tools
 import hashlib
 import hmac
 import json
@@ -13,7 +14,7 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import colorchooser, ttk
+from tkinter import colorchooser, filedialog, ttk
 from urllib import error, parse, request
 
 
@@ -23,6 +24,8 @@ LEGACY_CONFIG_PATH = Path.home() / ".work_status_badge.json"
 DEVICE_CONFIG_PATH = Path.home() / ".work_status_badge_device.json"
 API_PATH = "/api/status"
 REQUEST_TIMEOUT = 2.5
+PHOTO_CHUNK_BYTES = 768
+PHOTO_MAX_BYTES = 98304
 PAIRING_TIMEOUT = 35
 PAIRING_REQUEST_TIMEOUT = 10
 X25519_PRIME = (1 << 255) - 19
@@ -303,6 +306,36 @@ class BadgeClient:
         }).encode("utf-8")
         return self._signed_request(API_PATH, "POST", payload)
 
+    def send_photo(self, png: bytes, progress=None) -> dict:
+        """Upload a picture through the EXISTING Work Status paired identity."""
+        if not isinstance(png, bytes) or len(png) < 24 or len(png) > PHOTO_MAX_BYTES:
+            raise ValueError("The badge requires a PNG smaller than 96 KiB.")
+        if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("Select a supported PNG image.")
+        metadata = json.dumps({
+            "size": len(png), "sha256": hashlib.sha256(png).hexdigest(),
+        }).encode("utf-8")
+        self._signed_request("/api/frame/start", "POST", metadata)
+        sent = 0
+        while sent < len(png):
+            chunk = png[sent:sent + PHOTO_CHUNK_BYTES]
+            answer = self._signed_request(
+                "/api/frame/chunk", "POST", chunk,
+                query="?offset=%d" % sent,
+                content_type="application/octet-stream",
+            )
+            sent += len(chunk)
+            if answer.get("offset") != sent:
+                raise RuntimeError("Photo transfer offset differs from badge.")
+            if progress is not None:
+                progress(round(sent / len(png) * 95))
+        answer = self._signed_request("/api/frame/finish", "POST", b"{}")
+        if answer.get("displayed") is not True:
+            raise RuntimeError("Badge did not confirm that it displayed the photo.")
+        if progress is not None:
+            progress(100)
+        return self.get_status()
+
     def begin_pairing(self) -> dict:
         if not self.device_id:
             raise RuntimeError("This controller has no device identity.")
@@ -362,6 +395,8 @@ class BadgeClient:
         path: str,
         method: str,
         body: bytes = b"",
+        query: str = "",
+        content_type: str = "application/json",
     ) -> dict:
         if not self.device_id or self.device_key is None:
             raise PairingRequired("Pair this controller before connecting.")
@@ -389,10 +424,10 @@ class BadgeClient:
         data = None
         if method == "POST":
             data = body
-            headers["Content-Type"] = "application/json"
+            headers["Content-Type"] = content_type
         return self._send(
             request.Request(
-                self.base_url + path,
+                self.base_url + path + query,
                 data=data,
                 headers=headers,
                 method=method,
