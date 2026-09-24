@@ -1,7 +1,7 @@
 # Work Status Badge Controller
 
 This folder contains the Windows controller for the **Work Status** badge app.
-It uses only Python's standard library.
+Standard status controls use only Python's standard library. The optional Photo Frame editor also requires Pillow (`python -m pip install Pillow`).
 
 ## First-time setup
 
@@ -39,7 +39,7 @@ connection state, the active status and a preview of the last confirmed update.
 After connecting, setup fields fold away. Select **Edit / add badge** to manage
 profiles again.
 
-Use **Quick statuses** for the six presets, or **Create your own** for the custom
+Use **Quick statuses** for the six presets, **Create your own** for a custom sign, or **Photo frame** to send a picture straight from the laptop. The
 editor. These are separate views so neither is squeezed into a narrow column.
 The selected preset gets an accent border. Connection feedback stays visible
 along the bottom of the window.
@@ -76,6 +76,39 @@ The badge uses the full screen for the current symbol and text:
 
 Both devices must be on the same local Wi-Fi network.
 
+## Photo frame in the Windows GUI
+
+The updated `apps/work-status` badge application can show pictures without
+exiting Work Status. To enable this feature, copy the **new** Work Status folder
+onto your badge, restart it and open Work Status. The old badge app cannot
+accept picture uploads even if you update only the laptop controller.
+
+Install the optional image editor library in the same Python environment used
+by the controller:
+
+```powershell
+python -m pip install Pillow
+```
+
+On your home Wi-Fi, open the Windows dashboard, connect with your **existing**
+paired badge identity, and select **Photo frame**. Choose a local JPEG, PNG or
+another Pillow-supported photo. Drag the live 4:3 preview to reposition the
+picture, adjust the zoom, then press **Display photo on badge**. A progress
+message shows the authenticated chunk transfer. The laptop converts the image
+to a 160×120 indexed-colour PNG to minimise badge memory usage. The selected
+picture is saved on the badge and remains available when Work Status is
+reopened.
+
+To go back to an animated Work Status screen, click any preset or custom
+status from the dashboard, or press **A** on the badge. Existing saved
+controllers, profiles and pairing keys are kept; pictures are private to this
+badge and are never sent to GitHub or a cloud service. The photo itself is
+not encrypted by local HTTP, so use a trusted WPA2/WPA3 network.
+
+For photo uploads from your **phone or iPad**, the separate
+`apps/photo-frame` badge app still provides its own local web controller. Only
+one of the Mona-OS badge apps can be open at a time.
+
 ## Secure pairing
 
 Pairing uses an ephemeral X25519 key exchange. The matching six-digit code
@@ -105,6 +138,10 @@ calculates the HMAC automatically:
 GET  /api/challenge?device_id=<paired-device-id>
 GET  /api/status
 POST /api/status
+GET  /api/frame
+POST /api/frame/start
+POST /api/frame/chunk?offset=<byte-offset>
+POST /api/frame/finish
 
 {"status":"meeting","note":"Back at 3pm"}
 ```
@@ -153,7 +190,7 @@ close the address screen early. **Offline** does not power the badge off;
 double-press B for hardware sleep.
 
 Run regression checks with `python -m unittest discover -s laptop/tests`.
-The desktop layout checks require a working Tk installation and desktop session.
+The desktop layout checks require a working Tk installation and desktop session. Photo editing tests additionally require Pillow.
 
 ![Redesigned desktop dashboard](../docs/images/laptop-controller.png)
 

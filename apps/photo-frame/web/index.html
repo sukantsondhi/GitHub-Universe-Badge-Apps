@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#080f20">
+  <meta name="description" content="Send your own photographs to your GitHub Universe badge over home Wi-Fi.">
+  <title>Photo Frame | Universe Badge</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div><div class="ambient ambient-two" aria-hidden="true"></div>
+  <div class="shell">
+    <header class="header">
+      <a class="brand" href="./" aria-label="Photo Frame home"><span class="brand-mark" aria-hidden="true">◈</span><span>PHOTO<span class="brand-muted">/FRAME</span></span></a>
+      <span class="header-note"><span class="status-dot"></span> UNIVERSE BADGE STUDIO</span>
+    </header>
+    <main>
+      <section class="intro">
+        <span class="eyebrow">YOUR BADGE. YOUR CANVAS.</span>
+        <h1>Make every pixel <em>yours.</em></h1>
+        <p>Choose a moment from your camera roll. Give it the perfect crop. Put it on your badge, straight from home Wi-Fi.</p>
+      </section>
+      <div class="workspace">
+        <section class="panel photo-panel" aria-label="Photo workspace">
+          <div class="section-heading"><span class="step">01</span><div><h2>Your canvas</h2><p>A little screen with a lot of personality.</p></div></div>
+          <div class="preview-frame"><div class="preview-inner">
+            <canvas id="preview" width="160" height="120" aria-label="Badge photo preview"></canvas>
+            <div id="empty" class="empty"><span class="empty-symbol">✦</span><strong>A canvas waiting for you</strong><span>Choose a photo to begin</span></div>
+          </div></div>
+          <div class="upload-row">
+            <label class="button button-secondary file-button" for="photo"> <span aria-hidden="true">＋</span> Choose photo</label>
+            <input type="file" id="photo" accept="image/*" aria-label="Choose a photo from your device">
+            <div class="file-details"><strong id="photoName">No photo selected</strong><span id="photoInfo">160 × 120 pixel crop · stays on your home Wi-Fi</span></div>
+          </div>
+          <div class="crop-controls">
+            <label for="zoom">Zoom <output id="zoomValue" for="zoom">1.0×</output></label>
+            <input id="zoom" type="range" min="1" max="3" step="0.05" value="1" disabled>
+            <p>Drag the photo to reposition it. Preview is the exact crop sent to your badge.</p>
+          </div>
+        </section>
+        <section class="panel connection-panel" aria-label="Badge connection">
+          <div class="section-heading"><span class="step">02</span><div><h2>Connect your badge</h2><p>Private, direct and on your network.</p></div></div>
+          <div id="hosted" hidden>
+            <div class="notice"><span aria-hidden="true">⌁</span><div><strong>Connect locally</strong><p>Open Photo Frame on your badge and press C to show its Wi-Fi address. Enter it below to open the secure-pairing controller hosted on the badge.</p></div></div>
+            <label class="field-label" for="address">Badge IP address</label>
+            <div class="address-row"><input id="address" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.42" aria-label="Badge IP address"><button id="openBadge" class="button button-primary" type="button">Open badge ↗</button></div>
+            <p class="helper">Your iPhone, iPad or computer must be on the same home Wi-Fi. Safari will navigate to the badge's local controller; no photograph is uploaded to GitHub.</p>
+          </div>
+          <div id="local" hidden>
+            <div class="connection-card"><span class="connection-icon">⌁</span><div><strong id="connectionName">Badge detected</strong><span id="connectionHint">Pair this browser before sending a photo.</span></div><span id="connectionPill" class="pill">NOT PAIRED</span></div>
+            <div id="pairPanel">
+              <label class="field-label" for="deviceName">Device name</label>
+              <input id="deviceName" type="text" maxlength="16" value="My iPhone" autocomplete="off">
+              <button id="pair" type="button" class="button button-primary full">Pair this device</button>
+              <div id="pairInstructions" class="pair-instructions" hidden><span>CHECK THE CODE</span><strong id="pairCode">000 000</strong><p>Check the same six digits appear on your badge, then press <b>UP</b> on the badge to approve. Press DOWN to reject.</p></div>
+            </div>
+            <div id="pairedPanel" hidden>
+              <div class="ready-card"><span aria-hidden="true">✓</span><span>Paired and ready to display</span></div>
+              <button id="send" type="button" class="button button-primary full" disabled>Display on badge ↗</button>
+              <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Image transfer progress"><div id="progress"></div></div>
+              <button id="refresh" type="button" class="button button-quiet full">Check badge connection</button>
+            </div>
+          </div>
+          <p id="feedback" class="feedback" role="status" aria-live="polite"></p>
+          <div class="facts"><div><span class="fact-icon">◫</span><span>320 × 240 IPS display<br><small>160 × 120 app canvas</small></span></div><div><span class="fact-icon">⌁</span><span>Local Wi-Fi transfer<br><small>No cloud storage</small></span></div><div><span class="fact-icon">◇</span><span>Verified device pairing<br><small>Challenge-response authentication</small></span></div></div>
+        </section>
+      </div>
+    </main>
+    <footer>Made for the GitHub Universe 2025 badge. Photos stay on your device and your badge.</footer>
+  </div>
+</body>
+</html>

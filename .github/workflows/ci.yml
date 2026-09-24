@@ -1,0 +1,27 @@
+name: Badge Apps CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  badge-and-controller:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install photo editor and virtual display
+        run: |
+          python -m pip install Pillow
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb
+      - name: Compile badge and desktop apps
+        run: |
+          python -m compileall -q apps/work-status apps/photo-frame laptop
+      - name: Run badge, controller and Tk interface tests
+        run: xvfb-run -a python -m unittest discover -s laptop/tests -v

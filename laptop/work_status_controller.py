@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import binascii
+import photo_tools
 import hashlib
 import hmac
 import json
@@ -13,7 +14,7 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import colorchooser, ttk
+from tkinter import colorchooser, filedialog, ttk
 from urllib import error, parse, request
 
 
@@ -23,6 +24,8 @@ LEGACY_CONFIG_PATH = Path.home() / ".work_status_badge.json"
 DEVICE_CONFIG_PATH = Path.home() / ".work_status_badge_device.json"
 API_PATH = "/api/status"
 REQUEST_TIMEOUT = 2.5
+PHOTO_CHUNK_BYTES = 768
+PHOTO_MAX_BYTES = 98304
 PAIRING_TIMEOUT = 35
 PAIRING_REQUEST_TIMEOUT = 10
 X25519_PRIME = (1 << 255) - 19
@@ -303,6 +306,36 @@ class BadgeClient:
         }).encode("utf-8")
         return self._signed_request(API_PATH, "POST", payload)
 
+    def send_photo(self, png: bytes, progress=None) -> dict:
+        """Upload a picture through the EXISTING Work Status paired identity."""
+        if not isinstance(png, bytes) or len(png) < 24 or len(png) > PHOTO_MAX_BYTES:
+            raise ValueError("The badge requires a PNG smaller than 96 KiB.")
+        if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("Select a supported PNG image.")
+        metadata = json.dumps({
+            "size": len(png), "sha256": hashlib.sha256(png).hexdigest(),
+        }).encode("utf-8")
+        self._signed_request("/api/frame/start", "POST", metadata)
+        sent = 0
+        while sent < len(png):
+            chunk = png[sent:sent + PHOTO_CHUNK_BYTES]
+            answer = self._signed_request(
+                "/api/frame/chunk", "POST", chunk,
+                query="?offset=%d" % sent,
+                content_type="application/octet-stream",
+            )
+            sent += len(chunk)
+            if answer.get("offset") != sent:
+                raise RuntimeError("Photo transfer offset differs from badge.")
+            if progress is not None:
+                progress(round(sent / len(png) * 95))
+        answer = self._signed_request("/api/frame/finish", "POST", b"{}", timeout=12.0)
+        if answer.get("displayed") is not True:
+            raise RuntimeError("Badge did not confirm that it displayed the photo.")
+        if progress is not None:
+            progress(100)
+        return self.get_status()
+
     def begin_pairing(self) -> dict:
         if not self.device_id:
             raise RuntimeError("This controller has no device identity.")
@@ -362,6 +395,9 @@ class BadgeClient:
         path: str,
         method: str,
         body: bytes = b"",
+        query: str = "",
+        content_type: str = "application/json",
+        timeout: float = REQUEST_TIMEOUT,
     ) -> dict:
         if not self.device_id or self.device_key is None:
             raise PairingRequired("Pair this controller before connecting.")
@@ -389,16 +425,17 @@ class BadgeClient:
         data = None
         if method == "POST":
             data = body
-            headers["Content-Type"] = "application/json"
+            headers["Content-Type"] = content_type
         return self._send(
             request.Request(
-                self.base_url + path,
+                self.base_url + path + query,
                 data=data,
                 headers=headers,
                 method=method,
             ),
             response_key=self.device_key,
             response_nonce=nonce,
+            timeout=timeout,
         )
 
     @staticmethod
@@ -613,6 +650,16 @@ class WorkStatusController:
         self.status_tiles: dict[str, tk.Frame] = {}
         self._status_columns = 0
         self.custom_panel_visible = False
+        self.photo_panel_visible = False
+        self.photo_source = None
+        self.photo_preview_image = None
+        self.photo_thumb_image = None
+        self.photo_zoom_var = tk.DoubleVar(value=1.0)
+        self.photo_name_var = tk.StringVar(value="Choose a photo from your laptop")
+        self.photo_progress_var = tk.StringVar(value="Ready to create a badge photo")
+        self.photo_pan_x = 0.0
+        self.photo_pan_y = 0.0
+        self.photo_drag = None
         self.custom_toggle_button: tk.Button | None = None
         self.pairing_active = False
         self.result_queue: queue.Queue[tuple[str, object, str]] = queue.Queue()
@@ -765,6 +812,8 @@ class WorkStatusController:
         self.presets_tab.pack(side="left", padx=(0, 8))
         self.custom_toggle_button = button(tabs, "Create your own", lambda: self._show_composer(True))
         self.custom_toggle_button.pack(side="left")
+        self.photo_tab = button(tabs, "Photo frame", lambda: self._show_composer("photo"))
+        self.photo_tab.pack(side="left", padx=(8, 0))
         self.content = tk.Frame(self.main_panel, bg=p["bg"])
         self.content.pack(fill="both", expand=True)
         self.content.columnconfigure(0, weight=1)
@@ -832,16 +881,63 @@ class WorkStatusController:
         self.custom_color_button.pack(side="left", padx=(10, 0))
         self.custom_send_button = button(self.custom_editor, "Send to badge", self.send_custom, True)
         self.custom_send_button.pack(fill="x", pady=(16, 0))
+        # The editor lives inside the main dashboard, not a separate browser.
+        self.photo_shell = tk.Frame(self.content, bg=p["panel"], padx=20, pady=16,
+                                    highlightthickness=1, highlightbackground=p["border"])
+        self.photo_shell.grid(row=0, column=0, sticky="nsew")
+        label(self.photo_shell, "Turn your badge into a photo frame.", 17, bold=True).pack(anchor="w")
+        label(self.photo_shell, "A private 4:3 photo, cropped on your laptop and sent over home Wi-Fi.",
+              9, p["muted"]).pack(anchor="w", pady=(4, 12))
+        self.photo_preview = tk.Canvas(self.photo_shell, height=255, bg="#0e1c35",
+                                       highlightthickness=1, highlightbackground=p["border"],
+                                       cursor="fleur")
+        self.photo_preview.pack(fill="both", expand=True)
+        self.photo_preview.bind("<Configure>", lambda _event: self._draw_photo_preview())
+        self.photo_preview.bind("<ButtonPress-1>", self._start_photo_drag)
+        self.photo_preview.bind("<B1-Motion>", self._drag_photo)
+        self.photo_preview.bind("<ButtonRelease-1>", lambda _event: setattr(self, "photo_drag", None))
+        label(self.photo_shell, "Drag the preview to reposition the photo.",
+              9, p["muted"]).pack(anchor="w", pady=(6, 3))
+        controls = tk.Frame(self.photo_shell, bg=p["panel"])
+        controls.pack(fill="x", pady=(4, 0))
+        self.photo_choose_button = button(controls, "Choose photo", self.choose_photo)
+        self.photo_choose_button.pack(side="left", padx=(0, 10))
+        label(controls, "", 9, p["muted"]).pack(side="left", fill="x", expand=True)
+        self.photo_zoom_label = label(controls, "Zoom 1.00x", 9, p["muted"])
+        self.photo_zoom_label.pack(side="right")
+        self.photo_scale = tk.Scale(self.photo_shell, variable=self.photo_zoom_var,
+                                    from_=1.0, to=3.0, resolution=0.05,
+                                    orient="horizontal", showvalue=False,
+                                    command=self._photo_zoom_changed,
+                                    bg=p["panel"], fg=p["text"],
+                                    troughcolor=p["field"], highlightthickness=0,
+                                    activebackground=p["cyan"])
+        self.photo_scale.pack(fill="x", pady=(2, 0))
+        self.photo_file_label = tk.Label(self.photo_shell, textvariable=self.photo_name_var,
+                                         bg=p["panel"], fg=p["muted"], anchor="w",
+                                         font=("Segoe UI", 9))
+        self.photo_file_label.pack(fill="x", pady=(2, 0))
+        self.photo_upload_button = button(self.photo_shell, "Display photo on badge",
+                                          self.send_photo, True)
+        self.photo_upload_button.pack(fill="x", pady=(10, 3))
+        if self.photo_source is None:
+            self.photo_upload_button.configure(state=tk.DISABLED)
+        self.photo_progress_label = tk.Label(self.photo_shell, textvariable=self.photo_progress_var,
+                                             bg=p["panel"], fg=p["muted"], anchor="w",
+                                             font=("Segoe UI", 9))
+        self.photo_progress_label.pack(fill="x")
         self._update_custom_preview()
         self._update_current_badge_preview()
-        self._show_composer(self.custom_panel_visible)
+        self._show_composer("photo" if self.photo_panel_visible
+                            else self.custom_panel_visible)
 
     def toggle_profile_details(self) -> None:
         self.profile_details_open = not self.profile_details_open
         self._apply_responsive_layout()
 
-    def _show_composer(self, visible: bool) -> None:
-        self.custom_panel_visible = visible
+    def _show_composer(self, visible: bool | str) -> None:
+        self.photo_panel_visible = visible == "photo"
+        self.custom_panel_visible = visible is True
         self._apply_responsive_layout()
 
     def _limit_note(self, *_args) -> None:
@@ -884,6 +980,12 @@ class WorkStatusController:
             return
 
         status = payload.get("status", "available")
+        if status == "photo":
+            canvas.configure(bg="#0e1c35")
+            canvas.create_text(width / 2, height / 2,
+                               text="PHOTO FRAME ACTIVE",
+                               fill="#80b5ff", font=("Segoe UI Semibold", 10))
+            return
         palettes = {
             "available": ("#080a0f", "#2ebe5c"),
             "meeting": ("#3e1217", "#f85149"),
@@ -1396,14 +1498,18 @@ class WorkStatusController:
             self.profile_editor.pack_forget()
         self.profile_details_button.configure(
             text="Hide badge details" if self.profile_details_open else "Edit / add badge")
-        if self.custom_panel_visible:
-            self.status_shell.grid_remove()
+        self.photo_shell.grid_remove()
+        self.custom_shell.grid_remove()
+        self.status_shell.grid_remove()
+        if self.photo_panel_visible:
+            self.photo_shell.grid()
+        elif self.custom_panel_visible:
             self.custom_shell.grid()
         else:
-            self.custom_shell.grid_remove()
             self.status_shell.grid()
-        for tab, active in ((self.presets_tab, not self.custom_panel_visible),
-                            (self.custom_toggle_button, self.custom_panel_visible)):
+        for tab, active in ((self.presets_tab, not self.custom_panel_visible and not self.photo_panel_visible),
+                            (self.custom_toggle_button, self.custom_panel_visible),
+                            (self.photo_tab, self.photo_panel_visible)):
             tab.configure(bg=p["active"] if active else p["bg"],
                           fg=p["cyan"] if active else p["muted"])
         self._set_status_grid_columns(2)
@@ -1412,6 +1518,9 @@ class WorkStatusController:
             control.configure(wraplength=tile_width,
                               font=("Segoe UI Semibold", 10 if width < 1000 else 11))
         self.custom_preview.configure(height=68 if height < 760 else 126)
+        self.photo_preview.configure(height=110 if height < 700 else 225)
+        if self.photo_panel_visible:
+            self._draw_photo_preview()
         self.fullscreen_button.configure(text="Exit full screen" if self.fullscreen else "Full screen")
 
     def toggle_fullscreen(self, _event=None):
@@ -1591,7 +1700,8 @@ class WorkStatusController:
         if self.current_payload:
             self._update_battery_display(self.current_payload)
             status = self.current_payload.get("status")
-            label = STATUSES[status][0] if status in STATUSES else "Custom"
+            label = ("PHOTO FRAME" if status == "photo" else
+                     STATUSES[status][0] if status in STATUSES else "Custom")
             self.hero.itemconfigure(self.current_status_display, text=label)
         self._update_current_badge_preview()
 
@@ -1764,6 +1874,10 @@ class WorkStatusController:
         for button in self.widget_buttons.values():
             button.configure(state=state)
         self.custom_send_button.configure(state=state)
+        self.photo_choose_button.configure(state=state)
+        self.photo_scale.configure(state=state)
+        self.photo_upload_button.configure(
+            state=state if self.photo_source is not None else tk.DISABLED)
         self.connection_var.set(message)
         self.connection_label.configure(fg=("#855900" if self.theme_name == "light" else "#f2cc60") if busy else THEMES[self.theme_name]["muted"])
         if busy:
@@ -1884,6 +1998,8 @@ class WorkStatusController:
                 kind, result, message = self.result_queue.get_nowait()
                 if kind == "success":
                     self._request_succeeded(result, message)
+                elif kind == "photo_progress":
+                    self.photo_progress_var.set("Sending photo: %d%%" % result)
                 elif kind == "pair_pending":
                     code = result["code"]
                     self.current_var.set("PAIRING CODE  " + code)
@@ -1971,6 +2087,14 @@ class WorkStatusController:
                 text=label,
                 fill=STATUSES[status][2],
             )
+        elif status == "photo":
+            self.current_status = "photo"
+            profile = self.device_var.get()
+            self.current_var.set("PHOTO FRAME" +
+                                 ("  /  " + profile if profile else ""))
+            self.hero.itemconfigure(self.current_badge, text=self.current_var.get())
+            self.hero.itemconfigure(self.current_status_display,
+                                    text="PHOTO FRAME", fill="#58a6ff")
         elif status == "custom":
             self.current_status = "custom"
             custom_text = str(result.get("custom_text", "CUSTOM"))[:24]
@@ -2003,6 +2127,8 @@ class WorkStatusController:
             )
         self._persist_profiles()
         self._set_busy(False, success_message)
+        if success_message.startswith("Photo displayed"):
+            self.photo_progress_var.set("Photo displayed successfully on the badge.")
         self.connection_label.configure(fg="#18793b" if self.theme_name == "light" else "#56d364")
         self._set_connection_indicator("connected", "CONNECTED")
         self._highlight_current()
@@ -2062,6 +2188,133 @@ class WorkStatusController:
         self._run_request(
             lambda client: client.set_custom(text, symbol, color),
             "Custom status sent to badge.",
+        )
+
+    def choose_photo(self) -> None:
+        """Choose a local photo; no network transfer occurs until Send."""
+        if self.busy:
+            return
+        filename = filedialog.askopenfilename(
+            parent=self.root,
+            title="Choose a badge photo",
+            filetypes=[
+                ("Pictures", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not filename:
+            return
+        try:
+            self.photo_source = photo_tools.open_photo(filename)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.photo_source = None
+            self.photo_upload_button.configure(state=tk.DISABLED)
+            self._show_error(str(exc))
+            return
+        self.photo_zoom_var.set(1.0)
+        self.photo_pan_x = self.photo_pan_y = 0.0
+        self.photo_name_var.set(Path(filename).name)
+        self.photo_progress_var.set("Ready to send. Drag to crop, or adjust zoom.")
+        self.photo_upload_button.configure(state=tk.NORMAL)
+        self._draw_photo_preview()
+
+    def _cropped_photo(self):
+        if self.photo_source is None:
+            raise ValueError("Choose a photo first.")
+        return photo_tools.crop_photo(
+            self.photo_source, self.photo_zoom_var.get(),
+            self.photo_pan_x, self.photo_pan_y,
+        )
+
+    def _draw_photo_preview(self) -> None:
+        canvas = getattr(self, "photo_preview", None)
+        if canvas is None or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        width = max(320, canvas.winfo_width())
+        height = max(140, canvas.winfo_height())
+        if self.photo_source is None:
+            canvas.create_text(width / 2, height / 2 - 12,
+                               text="YOUR PHOTO, YOUR BADGE",
+                               fill="#acd0ff", font=("Segoe UI Semibold", 13))
+            canvas.create_text(width / 2, height / 2 + 12,
+                               text="Choose a picture to see your 4:3 preview",
+                               fill="#839ab8", font=("Segoe UI", 10))
+            return
+        try:
+            _, _, ImageTk = photo_tools.pillow()
+            cropped = self._cropped_photo()
+            scale = min((width - 12) / 160, (height - 12) / 120)
+            size = (max(1, int(160 * scale)), max(1, int(120 * scale)))
+            self.photo_preview_image = ImageTk.PhotoImage(
+                cropped.resize(size, photo_tools.pillow()[0].Resampling.NEAREST),
+                master=self.root,
+            )
+            canvas.create_image(width / 2, height / 2,
+                                image=self.photo_preview_image, anchor="center")
+            canvas.create_rectangle(width / 2 - size[0] / 2 - 1,
+                                    height / 2 - size[1] / 2 - 1,
+                                    width / 2 + size[0] / 2 + 1,
+                                    height / 2 + size[1] / 2 + 1,
+                                    outline="#73aaff", width=1)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.photo_progress_var.set(str(exc))
+
+    def _draw_photo_thumbnail(self, canvas, width: int, height: int) -> None:
+        try:
+            Image, _, ImageTk = photo_tools.pillow()
+            scale = min((width - 8) / 160, (height - 8) / 120)
+            size = (max(1, int(160 * scale)), max(1, int(120 * scale)))
+            self.photo_thumb_image = ImageTk.PhotoImage(
+                self._cropped_photo().resize(size, Image.Resampling.NEAREST),
+                master=self.root,
+            )
+            canvas.create_image(width / 2, height / 2,
+                                image=self.photo_thumb_image)
+        except (OSError, ValueError, RuntimeError):
+            canvas.create_text(width / 2, height / 2, text="PHOTO FRAME",
+                               fill="#80b5ff", font=("Segoe UI Semibold", 10))
+
+    def _photo_zoom_changed(self, _value) -> None:
+        self.photo_zoom_label.configure(text="Zoom %.2fx" %
+                                        self.photo_zoom_var.get())
+        self._draw_photo_preview()
+
+    def _start_photo_drag(self, event) -> None:
+        if self.photo_source is not None and not self.busy:
+            self.photo_drag = (event.x, event.y, self.photo_pan_x, self.photo_pan_y)
+
+    def _drag_photo(self, event) -> None:
+        if self.photo_drag is None or self.photo_source is None or self.busy:
+            return
+        width = max(160, self.photo_preview.winfo_width())
+        height = max(120, self.photo_preview.winfo_height())
+        scale = min((width - 12) / 160, (height - 12) / 120)
+        x, y, original_x, original_y = self.photo_drag
+        self.photo_pan_x = original_x + (event.x - x) / max(scale, 0.01)
+        self.photo_pan_y = original_y + (event.y - y) / max(scale, 0.01)
+        self._draw_photo_preview()
+
+    def send_photo(self) -> None:
+        if self.busy:
+            return
+        if not self._has_pairing_key():
+            self._show_error("Select Connect and approve pairing first.")
+            return
+        try:
+            payload = photo_tools.encode_badge_png(self._cropped_photo())
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._show_error(str(exc))
+            return
+        self.photo_progress_var.set("Preparing authenticated photo transfer...")
+        self._run_request(
+            lambda client: client.send_photo(
+                payload,
+                progress=lambda percent: self.result_queue.put(
+                    ("photo_progress", percent, ""),
+                ),
+            ),
+            "Photo displayed on badge. Select a status to return to Work Status.",
         )
 
     def _close(self) -> None:

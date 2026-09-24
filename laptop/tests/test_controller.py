@@ -139,6 +139,39 @@ class ControllerTests(unittest.TestCase):
             TEST_DEVICE_KEY,
         )
 
+    def test_photo_upload_uses_signed_chunks_and_waits_for_display_confirmation(self):
+        from unittest.mock import patch
+        client = self.badge_client()
+        payload = b"\x89PNG\r\n\x1a\n" + b"x" * 1897
+        requests = []
+        progress = []
+
+        def signed(path, method, body=b"", query="", content_type="application/json", timeout=2.5):
+            requests.append((path, method, body, query, content_type))
+            if path == "/api/frame/chunk":
+                offset = int(query.split("=")[1])
+                return {"offset": offset + len(body)}
+            if path == "/api/frame/finish":
+                return {"displayed": True}
+            if path == "/api/status":
+                return {"status": "photo", "photo": True}
+            return {"ok": True}
+
+        with patch.object(client, "_signed_request", side_effect=signed):
+            result = client.send_photo(payload, progress=progress.append)
+        self.assertEqual(result["status"], "photo")
+        self.assertEqual(progress[-1], 100)
+        chunks = [item for item in requests if item[0] == "/api/frame/chunk"]
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(b"".join(item[2] for item in chunks), payload)
+        self.assertTrue(all(item[4] == "application/octet-stream" for item in chunks))
+        self.assertEqual(requests[-2][0], "/api/frame/finish")
+        self.assertEqual(requests[-1][0], "/api/status")
+
+    def test_photo_upload_rejects_invalid_payload(self):
+        with self.assertRaises(ValueError):
+            self.badge_client().send_photo(b"not a png" * 100)
+
     def test_address_defaults_to_port_8080(self):
         self.assertEqual(
             badge_base_url("192.168.1.42"),

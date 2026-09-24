@@ -15,14 +15,14 @@ from badgeware import (
     shapes,
     screen,
     PixelFont,
-    Image,
     get_battery_level,
     is_charging,
     run,
+    Image,
 )
 
 
-APP_DIR = "/system/apps/work-status"
+APP_DIR = "/system/apps/photo-frame"
 SERVER_PORT = 8080
 MAX_REQUEST_BYTES = 4096
 CLIENT_TIMEOUT_MS = 1500
@@ -45,7 +45,6 @@ STATUS_LABELS = {
     "lunch": "LUNCH BREAK",
     "sleep": "OFFLINE",
     "custom": "CUSTOM",
-    "photo": "PHOTO FRAME",
 }
 CUSTOM_SYMBOLS = (
     "star", "heart", "check", "alert", "coffee", "door", "code", "bolt"
@@ -341,7 +340,7 @@ def load_wifi_config():
 
 def save_status():
     try:
-        State.save("work_status", {
+        State.save("photo_frame_status", {
             "status": current_status,
             "note": current_note,
             "custom_text": custom_text,
@@ -361,7 +360,7 @@ def save_trusted_devices():
                 "name": device["name"],
                 "key": hexlify(device["key"]),
             })
-        State.save("work_status_devices", {"devices": records})
+        State.save("photo_frame_devices", {"devices": records})
     except Exception as error:
         print("Could not save trusted devices:", error)
 
@@ -448,7 +447,7 @@ def start_server():
         server_socket.listen(1)
         server_socket.setblocking(False)
         wifi_state = "online"
-        print("Work Status listening on http://%s:%d" % (ip_address, SERVER_PORT))
+        print("Photo Frame listening on http://%s:%d" % (ip_address, SERVER_PORT))
     except Exception as error:
         print("HTTP server start failed:", error)
         close_server()
@@ -503,7 +502,6 @@ def status_payload():
     refresh_battery_status()
     return {
         "status": current_status,
-        "photo": bool(photo_filename),
         "note": current_note,
         "custom_text": custom_text,
         "custom_symbol": custom_symbol,
@@ -727,6 +725,7 @@ def make_response(code, payload, auth_key=None, auth_nonce=""):
     return headers.encode("utf-8") + body
 
 
+
 # Photo content is intentionally local to this app. Both image slots are kept
 # until the replacement PNG has been validated and stored successfully.
 PHOTO_MAX_BYTES = 98304
@@ -749,8 +748,31 @@ def photo_status():
     }
 
 
+def photo_asset(path):
+    routes = {
+        "/": ("index.html", "text/html; charset=utf-8"),
+        "/index.html": ("index.html", "text/html; charset=utf-8"),
+        "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+        "/style.css": ("style.css", "text/css; charset=utf-8"),
+    }
+    item = routes.get(path)
+    if item is None:
+        return make_response(404, {"error": "not found"})
+    try:
+        with open(APP_DIR + "/web/" + item[0], "rb") as source:
+            body = source.read()
+        return (
+            ("HTTP/1.1 200 OK\r\nContent-Type: %s\r\n"
+             "Content-Length: %d\r\nCache-Control: no-store\r\n"
+             "X-Content-Type-Options: nosniff\r\n"
+             "Connection: close\r\n\r\n") % (item[1], len(body))
+        ).encode("ascii") + body
+    except Exception:
+        return make_response(500, {"error": "web files missing"})
+
+
 def photo_request(method, path, query, body, headers):
-    global photo_upload, photo_image, photo_filename, current_status
+    global photo_upload, photo_image, photo_filename
     controller = headers.get("x-work-device", "")
     if path == "/api/frame" and method == "GET":
         return 200, photo_status()
@@ -829,9 +851,7 @@ def photo_request(method, path, query, body, headers):
             os.rename(PHOTO_TEMP, target)
             photo_filename = target.rsplit("/", 1)[-1]
             photo_image = candidate
-            State.save("work_status_photo_current", {"file": photo_filename})
-            current_status = "photo"
-            save_status()
+            State.save("photo_frame_current", {"file": photo_filename})
             gc.collect()
             return 200, {"displayed": True, "has_photo": True}
         except Exception as error:
@@ -848,7 +868,7 @@ def load_photo():
     global photo_image, photo_filename
     data = {"file": ""}
     try:
-        if State.load("work_status_photo_current", data):
+        if State.load("photo_frame_current", data):
             name = data.get("file", "")
             if name in ("photo-a.png", "photo-b.png"):
                 photo_image = Image.load(APP_DIR + "/" + name)
@@ -893,6 +913,16 @@ def handle_request(raw_request):
             name, value = field.split("=", 1)
             query_values[name] = value
 
+    if method == "GET" and path in ("/", "/index.html", "/app.js", "/style.css"):
+        return photo_asset(path)
+
+    if path.startswith("/api/frame"):
+        auth_key = authorize_request(method, path, body, headers)
+        if auth_key is None:
+            return make_response(401, {"error": "authentication failed"})
+        status, response = photo_request(method, path, query_values, body, headers)
+        return make_response(status, response, auth_key, headers["x-work-nonce"])
+
     if path == "/api/pair":
         if method != "POST":
             return make_response(405, {"error": "method not allowed"})
@@ -916,13 +946,6 @@ def handle_request(raw_request):
             return make_response(405, {"error": "method not allowed"})
         code, payload = issue_challenge(query_values.get("device_id", ""))
         return make_response(code, payload)
-
-    if path.startswith("/api/frame"):
-        auth_key = authorize_request(method, path, body, headers)
-        if auth_key is None:
-            return make_response(401, {"error": "authentication failed"})
-        code, payload = photo_request(method, path, query_values, body, headers)
-        return make_response(code, payload, auth_key, headers["x-work-nonce"])
 
     if path != "/api/status":
         return make_response(404, {"error": "not found"})
@@ -1049,7 +1072,7 @@ def service_http():
             if len(client_buffer) > MAX_REQUEST_BYTES:
                 try:
                     client_socket.setblocking(True)
-                    client_socket.settimeout(3)
+                    client_socket.settimeout(2)
                     client_socket.sendall(make_response(413, {"error": "request too large"}))
                 except Exception:
                     pass
@@ -1246,7 +1269,7 @@ def draw_address_overlay():
     screen.clear()
     screen.font = SMALL_FONT
     screen.brush = MUTED
-    center_text("CONNECT YOUR LAPTOP", 22)
+    center_text("OPEN ON HOME WIFI", 22)
     screen.font = SMALL_FONT
     screen.brush = GREEN
     center_text(ip_address if wifi_state == "online" else "Wi-Fi not connected", 46)
@@ -1267,7 +1290,7 @@ def draw_pairing_overlay():
     screen.clear()
     screen.font = SMALL_FONT
     screen.brush = MUTED
-    center_text("PAIR YOUR LAPTOP", 8)
+    center_text("PAIR YOUR IPHONE", 8)
     screen.brush = WHITE
     center_text(pending_pairing["name"], 27)
     screen.font = TITLE_FONT
@@ -1275,7 +1298,7 @@ def draw_pairing_overlay():
     center_text(pending_pairing["code"][:3] + " " + pending_pairing["code"][3:], 48)
     screen.font = SMALL_FONT
     screen.brush = WHITE
-    center_text("MATCH CODE ON LAPTOP", 78)
+    center_text("MATCH CODE ON PHONE", 78)
     screen.brush = GREEN
     center_text("UP: APPROVE", 94)
     screen.brush = RED
@@ -1312,11 +1335,22 @@ def draw_ui():
         draw_address_overlay()
         return
 
-    if current_status == "photo" and photo_image is not None:
+    if photo_image is not None:
         screen.brush = BLACK
         screen.clear()
         screen.blit(photo_image, 0, 0)
         return
+    screen.brush = BLACK
+    screen.clear()
+    screen.font = TITLE_FONT
+    screen.brush = GREEN
+    center_text("PHOTO FRAME", 30)
+    screen.font = SMALL_FONT
+    screen.brush = WHITE
+    center_text("PRESS C FOR ADDRESS", 62)
+    center_text("OPEN IN SAFARI", 79)
+    draw_battery_indicator()
+    return
 
     if current_status == "meeting":
         background, accent = RED_DARK, RED
@@ -1371,7 +1405,7 @@ def draw_ui():
     if not current_note and current_status != "custom":
         screen.font = SMALL_FONT
         screen.brush = MUTED
-        hint = "A: next  C: connect"
+        hint = "C: local address"
         if 0 <= io.ticks - last_b_press <= DOUBLE_B_WINDOW_MS:
             hint = "B again: power off"
         elif wifi_state == "missing config":
@@ -1443,7 +1477,7 @@ def init():
     }
     try:
         if State.load("work_status", saved):
-            if saved.get("status") in STATUS_ORDER or saved.get("status") == "photo":
+            if saved.get("status") in STATUS_ORDER:
                 current_status = saved["status"]
             current_note = clean_note(saved.get("note", ""))
             custom_text = clean_note(saved.get("custom_text", "HELLO")) or "CUSTOM"
@@ -1472,8 +1506,7 @@ def update():
             reject_pending_pairing()
     else:
         if io.BUTTON_A in io.pressed:
-            index = ((STATUS_ORDER.index(current_status) + 1) % len(STATUS_ORDER)
-                     if current_status in STATUS_ORDER else 0)
+            index = (STATUS_ORDER.index(current_status) + 1) % len(STATUS_ORDER)
             current_status = STATUS_ORDER[index]
             current_note = ""
             save_status()
