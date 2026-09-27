@@ -1,0 +1,30 @@
+name: Bug report
+description: Report a reproducible badge or desktop issue
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include Wi-Fi names/passwords, pairing keys, private photos or unredacted configuration. Use private vulnerability reporting for security issues."
+  - type: input
+    id: firmware
+    attributes:
+      label: Badge model and firmware
+      placeholder: Universe 2025, Mona-OS v4.03
+    validations:
+      required: true
+  - type: input
+    id: desktop
+    attributes:
+      label: Desktop OS and Python version
+      placeholder: Windows 11, Python 3.11
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include expected and actual behaviour and the app/version used.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized error message or screenshots
+      description: Remove addresses, personal data and secrets first. Use sample media when possible.

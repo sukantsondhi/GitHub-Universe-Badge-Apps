@@ -1,0 +1,24 @@
+title = "Badge apps secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "badge-wifi-ssid"
+description = "Non-placeholder Wi-Fi network name"
+regex = '''(?i)["']?(?:wifi_ssid|ssid)["']?\s*[:=]\s*["']([^"'\r\n]+)["']'''
+secretGroup = 1
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^(?i:your[_ -](?:wifi[_ -])?(?:ssid|network|network[_ -]name)|example[_ -](?:wifi|ssid|network)|test[_ -](?:wifi|ssid|network)|SSID)$''']
+
+[[rules]]
+id = "badge-wifi-password"
+description = "Non-placeholder Wi-Fi password"
+regex = '''(?i)["']?(?:wifi_password|wifi_pass|wlan_password|psk)["']?\s*[:=]\s*["']([^"'\r\n]+)["']'''
+secretGroup = 1
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^(?i:your[_ -](?:wifi[_ -])?password|example[_ -]password|test[_ -]password|PASSWORD)$''']

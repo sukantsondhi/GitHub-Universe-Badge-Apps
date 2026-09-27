@@ -3,7 +3,6 @@
 import importlib.util
 import math
 import sys
-import tempfile
 import types
 from pathlib import Path
 
@@ -17,7 +16,12 @@ SCALE = 2
 
 def font(size, bold=False):
     name = "seguisb.ttf" if bold else "segoeui.ttf"
-    return ImageFont.truetype(str(Path("C:/Windows/Fonts") / name), size)
+    for path in (Path("C:/Windows/Fonts") / name,
+                 Path("/usr/share/fonts/truetype/dejavu") /
+                 ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")):
+        if path.exists():
+            return ImageFont.truetype(str(path), size)
+    return ImageFont.load_default()
 
 
 class PreviewFont:
@@ -75,6 +79,13 @@ class PreviewScreen:
             (int(x), int(y)), str(value), fill=self.brush,
             font=self.font.pillow, stroke_width=0,
         )
+
+    def blit(self, image, left, top):
+        self.scale_blit(image, left, top, image.width, image.height)
+
+    def scale_blit(self, image, left, top, width, height):
+        resized = image.convert("RGBA").resize((int(width), int(height)), Image.Resampling.NEAREST)
+        self.image.paste(resized, (int(left), int(top)), resized)
 
     def draw(self, shape):
         args = shape.args
@@ -178,6 +189,7 @@ def load_badge_app(relative_path, name):
         brushes=types.SimpleNamespace(color=lambda *values: tuple(values[:3])),
         shapes=Shapes(),
         screen=screen,
+        Image=types.SimpleNamespace(load=Image.open),
         PixelFont=types.SimpleNamespace(
             load=lambda path: PreviewFont(
                 25 if "absolute" in path else (
@@ -251,6 +263,46 @@ def render_work_status():
     app.draw_ui()
     screen.save("work-status-custom.png")
 
+    app.pending_pairing = {"name": "Demo laptop", "code": "123456", "expires": 30000}
+    app.draw_ui()
+    screen.save("work-status-pairing.png")
+    app.pending_pairing = None
+    app.ip_address = "192.0.2.42"
+    app.show_address_until = io.ticks + 8000
+    app.draw_ui()
+    screen.save("work-status-address.png")
+    app.show_address_until = 0
+    app.current_status = "photo"
+    app.photo_image = demo_frames()[3].resize((80, 60), Image.Resampling.LANCZOS)
+    app.draw_ui()
+    screen.save("work-status-photo.png")
+
+
+def demo_frames():
+    """Original geometric artwork; no third-party media or private photos."""
+    frames = []
+    for index in range(12):
+        image = Image.new("RGB", (320, 240), "#edf4f2")
+        drawing = ImageDraw.Draw(image)
+        drawing.rectangle((0, 168, 319, 239), fill="#18342e")
+        drawing.rectangle((24, 28, 295, 147), fill="#ffffff")
+        drawing.text((39, 42), "HELLO UNIVERSE", font=font(22, True), fill="#18342e")
+        drawing.line((40, 113, 280, 113), fill="#b5cbc3", width=3)
+        left = 40 + index * 18
+        drawing.rectangle((left, 90, left + 34, 125), fill="#ef7956")
+        drawing.rectangle((24, 188, 94, 212), fill="#55c4af")
+        drawing.rectangle((106, 188, 176, 212), fill="#f3bf5f")
+        drawing.rectangle((188, 188, 295, 212), fill="#d5e3de")
+        frames.append(image)
+    return frames
+
+
+def render_demo_animation():
+    frames = demo_frames()
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    frames[0].save(OUTPUT / "demo-animation.gif", save_all=True,
+                   append_images=frames[1:], duration=140, loop=0, disposal=2)
+
 
 def render_clock():
     app, screen, _io = load_badge_app(
@@ -284,7 +336,7 @@ def render_currency():
     screen.save("currency.png")
 
 
-def capture_laptop(theme="dark", custom=False):
+def capture_laptop(theme="light", view="status", compact=False):
     """Capture the real dashboard using isolated, non-networked sample data."""
     import tkinter as tk
     from unittest.mock import patch
@@ -294,35 +346,63 @@ def capture_laptop(theme="dark", custom=False):
 
     config = controller.normalize_config({})
     config["theme"] = theme
+    config["badges"] = {"Demo badge": "192.0.2.42:8080", "Workshop": "192.0.2.43:8080"}
+    config["selected"] = "Demo badge"
     identity = {"id": "ab" * 16, "name": "Preview", "keys": {}}
     with patch.object(controller, "load_config", return_value=config), \
          patch.object(controller, "load_device_config", return_value=identity), \
          patch.object(controller, "save_config"), \
          patch.object(controller, "save_device_config"):
         root = tk.Tk()
+        app = None
         try:
             app = controller.WorkStatusController(root)
-            app.device_var.set("Home office")
-            app.profile_name_var.set("Home office")
-            app.address_var.set("192.168.1.42:8080")
-            app._request_succeeded(
-                {"status": "focus", "note": "Back at 14:30", "battery": 82},
-                "Focus mode is on. Your badge is up to date.",
-            )
-            if custom:
+            root.geometry("820x620+24+24" if compact else "1180x830+24+24")
+            if view != "setup":
+                app._request_succeeded(
+                    {"status": "focus", "note": "Back at 14:30", "battery": 82},
+                    "Focus mode is on. Your badge is up to date.",
+                )
+            if view == "custom":
                 app._show_composer(True)
-            root.attributes("-topmost", True)
-            root.lift()
+                app.custom_text_var.set("BUILDING SOMETHING")
+                app._update_custom_preview()
+            elif view == "media":
+                app._show_composer("photo")
+                with patch.object(controller.filedialog, "askopenfilename", return_value=str(OUTPUT / "demo-animation.gif")):
+                    app.choose_photo()
+            elif view == "pairing":
+                app._set_busy(True, "Requesting secure pairing...")
+                app.result_queue.put(("pair_pending", {"code": "123456"}, ""))
+                app._poll_results()
+            elif view == "error":
+                app._request_failed("Cannot reach badge: connection timed out.")
+            elif view == "setup":
+                app.profile_details_open = True
+                app.toggle_address_visibility()
+            elif view == "widget":
+                app.open_widget()
+            target = app.widget_window if view == "widget" else root
+            target.attributes("-topmost", True)
+            target.lift()
             root.update()
             app._apply_responsive_layout()
             root.after(350, root.quit)
             root.mainloop()
-            x, y = root.winfo_rootx(), root.winfo_rooty()
-            w, h = root.winfo_width(), root.winfo_height()
+            if not target.winfo_viewable():
+                raise RuntimeError("The screenshot window is not visible.")
+            left, top = target.winfo_rootx(), target.winfo_rooty()
+            width, height = target.winfo_width(), target.winfo_height()
             OUTPUT.mkdir(parents=True, exist_ok=True)
-            name = "laptop-custom.png" if custom else "laptop-controller.png"
-            ImageGrab.grab((x, y, x + w, y + h)).save(OUTPUT / name, optimize=True)
+            name = "laptop-controller" if view == "status" else "laptop-" + view
+            if theme == "dark":
+                name += "-dark"
+            if compact:
+                name += "-compact"
+            ImageGrab.grab((left, top, left + width, top + height)).save(OUTPUT / (name + ".png"), optimize=True)
         finally:
+            if app is not None:
+                app._stop_photo_animation()
             for timer in root.tk.call("after", "info"):
                 root.after_cancel(timer)
             root.destroy()
@@ -341,9 +421,12 @@ def render_icon():
 
 
 if __name__ == "__main__":
-    render_icon()
+    render_demo_animation()
     render_work_status()
     render_clock()
     render_currency()
-    capture_laptop()
+    for screenshot_view in ("status", "custom", "media", "setup", "pairing", "error", "widget"):
+        capture_laptop(view=screenshot_view)
+    capture_laptop(theme="dark")
+    capture_laptop(compact=True)
     print("README images written to", OUTPUT)

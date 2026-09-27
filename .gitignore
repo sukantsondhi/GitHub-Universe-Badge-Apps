@@ -4,6 +4,22 @@ secrets.py
 
 # Laptop-specific badge names and local IP addresses
 laptop/badge_profiles.json
+badge_profiles.json
+.work_status_badge.json
+.work_status_badge_device.json
+.badge_state/
+work-status-photo-*.png
+work-status-animation-*/
+
+# Private local test media; no redistribution permission recorded
+assets/mona-sprites/Pikachu.gif
+
+# Local secret-scan reports can contain sensitive findings
+secret-audit-local/
+gitleaks-report*.json
+.env
+.env.*
+!.env.example
 
 # Python
 __pycache__/

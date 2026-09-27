@@ -25,9 +25,11 @@ from badgeware import (
 APP_DIR = "/system/apps/work-status"
 SERVER_PORT = 8080
 MAX_REQUEST_BYTES = 4096
-CLIENT_TIMEOUT_MS = 1500
+CLIENT_TIMEOUT_MS = 6000
 WIFI_RETRY_MS = 15000
 FRAME_DELAY_MS = 100
+TRANSFER_FRAME_DELAY_MS = 1
+TRANSFER_FAST_WINDOW_MS = 2000
 SLEEP_STATUS_FRAME_DELAY_MS = 250
 DOUBLE_B_WINDOW_MS = 700
 PAIRING_TIMEOUT_MS = 30000
@@ -727,30 +729,227 @@ def make_response(code, payload, auth_key=None, auth_nonce=""):
     return headers.encode("utf-8") + body
 
 
-# Photo content is intentionally local to this app. Both image slots are kept
-# until the replacement PNG has been validated and stored successfully.
+# /system contains installed app code and may be mounted read-only. Uploaded
+# media belongs in the writable root filesystem, like other badge save data.
+# Both image slots are kept until a replacement has been validated and stored.
 PHOTO_MAX_BYTES = 98304
-PHOTO_CHUNK_MAX = 768
-PHOTO_TEMP = APP_DIR + "/photo-upload.png"
-PHOTO_A = APP_DIR + "/photo-a.png"
-PHOTO_B = APP_DIR + "/photo-b.png"
+PHOTO_CHUNK_MAX = 1536
+PHOTO_UPLOAD_TIMEOUT_MS = 60000
+PHOTO_TEMP = "/work-status-photo-upload.png"
+PHOTO_A = "/work-status-photo-a.png"
+PHOTO_B = "/work-status-photo-b.png"
+ANIMATION_A = "/work-status-animation-a"
+ANIMATION_B = "/work-status-animation-b"
+ANIMATION_MAX_BYTES = 524288
+ANIMATION_MAX_FRAMES = 120
 photo_image = None
+photo_animation = None
 photo_filename = ""
 photo_upload = None
+photo_last_finish = None
+
+
+def filename_from_path(path):
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def saved_photo_paths():
+    """Map allowed state values to paths without accepting arbitrary files."""
+    return {
+        filename_from_path(PHOTO_A): PHOTO_A,
+        filename_from_path(PHOTO_B): PHOTO_B,
+        filename_from_path(ANIMATION_A): ANIMATION_A,
+        filename_from_path(ANIMATION_B): ANIMATION_B,
+        # Read photos saved by the earlier build when /system happened to be
+        # writable. The next successful upload migrates to writable storage.
+        "photo-a.png": APP_DIR + "/photo-a.png",
+        "photo-b.png": APP_DIR + "/photo-b.png",
+    }
 
 
 def photo_status():
-    return {
+    payload = {
         "ready": wifi_state == "online",
         "has_photo": bool(photo_filename),
         "width": 160, "height": 120,
+        "png_sizes": [[80, 60], [160, 120]],
+        "animation_format": "wsa1",
+        "max_animation_bytes": ANIMATION_MAX_BYTES,
         "max_bytes": PHOTO_MAX_BYTES,
         "chunk_bytes": PHOTO_CHUNK_MAX,
     }
+    if photo_animation is not None:
+        payload["frame_index"] = photo_animation["index"]
+        payload["frame_count"] = len(photo_animation["durations"])
+    if photo_upload is not None:
+        payload["upload_offset"] = photo_upload["written"]
+        payload["upload_size"] = photo_upload["size"]
+    return payload
+
+
+def expire_photo_upload():
+    global photo_upload
+    if (photo_upload is not None
+            and io.ticks - photo_upload["last_activity"] >= PHOTO_UPLOAD_TIMEOUT_MS):
+        photo_upload = None
+        try:
+            os.remove(PHOTO_TEMP)
+        except OSError:
+            pass
+
+
+def animation_frame_path(directory, index):
+    return directory + "/%03d.png" % index
+
+
+def open_saved_photo(path):
+    global photo_image, photo_animation
+    photo_image = None
+    photo_animation = None
+    gc.collect()
+    if path.endswith(".png"):
+        photo_image = Image.load(path)
+    else:
+        with open(path + "/timing.json", "r") as source:
+            timing = json.load(source)
+        durations = timing["durations"]
+        if not isinstance(durations, list) or not 2 <= len(durations) <= ANIMATION_MAX_FRAMES:
+            raise ValueError("invalid animation frame count")
+        if not isinstance(timing["plays"], int) or not 0 <= timing["plays"] <= 65535:
+            raise ValueError("invalid animation repeat count")
+        if any(not isinstance(delay, int) or not 20 <= delay <= 60000 for delay in durations):
+            raise ValueError("invalid animation timing")
+        photo_image = Image.load(animation_frame_path(path, 0))
+        photo_animation = {
+            "directory": path, "durations": durations, "index": 0,
+            "remaining": timing["plays"] or -1,
+            "due": io.ticks + durations[0],
+        }
+    if photo_image is None:
+        raise ValueError("image decoder returned no image")
+
+
+def advance_photo_animation():
+    global photo_image, photo_animation
+    animation = photo_animation
+    if (animation is None or photo_upload is not None
+            or animation["remaining"] == 0 or io.ticks < animation["due"]):
+        return
+    index = animation["index"] + 1
+    if index == len(animation["durations"]):
+        if animation["remaining"] > 0:
+            animation["remaining"] -= 1
+            if animation["remaining"] == 0:
+                return
+        index = 0
+    photo_image = None
+    gc.collect()
+    try:
+        photo_image = Image.load(animation_frame_path(animation["directory"], index))
+        if photo_image is None:
+            raise ValueError("image decoder returned no frame")
+        animation["index"] = index
+        animation["due"] = io.ticks + animation["durations"][index]
+    except Exception as error:
+        print("Animation playback failed:", error)
+        photo_animation = None
+        gc.collect()
+        try:
+            photo_image = Image.load(animation_frame_path(
+                animation["directory"], animation["index"]))
+        except Exception:
+            photo_image = None
+
+
+def finish_animation(transfer, controller):
+    global photo_image, photo_animation, photo_filename, current_status, photo_last_finish
+    previous = photo_filename
+    previous_path = saved_photo_paths().get(previous)
+    target = (ANIMATION_B if previous == filename_from_path(ANIMATION_A) else ANIMATION_A)
+    try:
+        with open(PHOTO_TEMP, "rb") as source:
+            header = source.read(8)
+            if len(header) != 8 or header[:4] != b"WSA1":
+                raise ValueError("invalid animation header")
+            count = int.from_bytes(header[4:6], "big")
+            plays = int.from_bytes(header[6:8], "big")
+            if not 2 <= count <= ANIMATION_MAX_FRAMES:
+                raise ValueError("expected 2 to 120 animation frames")
+            try:
+                entries = os.listdir(target)
+            except OSError:
+                os.mkdir(target)
+                entries = []
+            for name in entries:
+                os.remove(target + "/" + name)
+            entries = None
+            photo_image = None
+            gc.collect()
+            durations = []
+            for index in range(count):
+                record = source.read(6)
+                if len(record) != 6:
+                    raise ValueError("truncated animation timing")
+                delay = int.from_bytes(record[:2], "big")
+                size = int.from_bytes(record[2:], "big")
+                if not 20 <= delay <= 60000 or not 33 <= size <= 16384:
+                    raise ValueError("invalid animation frame")
+                filename = animation_frame_path(target, index)
+                with open(filename, "wb") as output:
+                    remaining = size
+                    while remaining:
+                        chunk = source.read(min(512, remaining))
+                        if not chunk:
+                            raise ValueError("truncated animation frame")
+                        output.write(chunk)
+                        remaining -= len(chunk)
+                with open(filename, "rb") as frame:
+                    png = frame.read(29)
+                if (png[:8] != b"\x89PNG\r\n\x1a\n" or png[12:16] != b"IHDR"
+                        or png[16:24] != b"\x00\x00\x00\x50\x00\x00\x00\x3c"
+                        or png[24:29] != b"\x08\x03\x00\x00\x00"):
+                    raise ValueError("animation needs 80x60 paletted PNG frames")
+                gc.collect()
+                candidate = Image.load(filename)
+                if candidate is None:
+                    raise ValueError("image decoder returned no frame")
+                candidate = None
+                durations.append(delay)
+            if source.read(1):
+                raise ValueError("unexpected animation data")
+        with open(target + "/timing.json", "w") as output:
+            json.dump({"durations": durations, "plays": plays}, output)
+        open_saved_photo(target)
+        State.save("work_status_photo_current", {"file": filename_from_path(target)})
+    except Exception as error:
+        print("Animation upload failed:", error)
+        photo_image = None
+        photo_animation = None
+        gc.collect()
+        try:
+            if previous_path:
+                open_saved_photo(previous_path)
+        except Exception:
+            photo_image = None
+            photo_animation = None
+        return 400, {"error": "badge animation load failed: " + str(error)[:120]}
+    photo_filename = filename_from_path(target)
+    current_status = "photo"
+    save_status()
+    photo_last_finish = {
+        "owner": controller, "sha256": transfer["sha256"], "expires": io.ticks + 30000,
+    }
+    try:
+        os.remove(PHOTO_TEMP)
+    except OSError:
+        pass
+    return 200, {"displayed": True, "has_photo": True, "animated": True}
 
 
 def photo_request(method, path, query, body, headers):
     global photo_upload, photo_image, photo_filename, current_status
+    global photo_last_finish, photo_animation
+    expire_photo_upload()
     controller = headers.get("x-work-device", "")
     if path == "/api/frame" and method == "GET":
         return 200, photo_status()
@@ -761,8 +960,11 @@ def photo_request(method, path, query, body, headers):
             message = json.loads(body.decode("utf-8"))
             size = message["size"]
             digest = message["sha256"]
+            media_format = message.get("format", "png")
+            limit = ANIMATION_MAX_BYTES if media_format == "wsa1" else PHOTO_MAX_BYTES
             if (not isinstance(size, int) or isinstance(size, bool)
-                    or size < 24 or size > PHOTO_MAX_BYTES
+                    or media_format not in ("png", "wsa1")
+                    or size < 24 or size > limit
                     or not isinstance(digest, str) or len(digest) != 64
                     or any(ch not in "0123456789abcdef" for ch in digest)):
                 raise ValueError("invalid image metadata")
@@ -773,17 +975,29 @@ def photo_request(method, path, query, body, headers):
                 pass
             photo_upload = {
                 "owner": controller, "size": size, "sha256": digest,
+                "format": media_format,
+                "last_activity": io.ticks,
                 "written": 0, "hash": hashlib.sha256(),
+                "last_offset": -1, "last_size": 0, "last_hash": b"",
             }
-            return 200, {"offset": 0}
-        except Exception:
-            return 500, {"error": "storage not writable"}
+            return 200, {"offset": 0, "chunk_bytes": PHOTO_CHUNK_MAX}
+        except Exception as error:
+            print("Photo storage unavailable:", error)
+            return 500, {"error": "badge writable storage is unavailable"}
     if path == "/api/frame/chunk" and method == "POST":
         transfer = photo_upload
         try:
             offset = int(query.get("offset", "-1"))
         except Exception:
             return 400, {"error": "invalid offset"}
+        if transfer is not None and transfer["owner"] == controller:
+            # If a response was lost, accepting the identical last chunk again
+            # makes laptop retries safe without writing duplicate bytes.
+            if (offset == transfer["last_offset"]
+                    and len(body) == transfer["last_size"]
+                    and sha256(body) == transfer["last_hash"]):
+                transfer["last_activity"] = io.ticks
+                return 200, {"offset": transfer["written"]}
         if (transfer is None or transfer["owner"] != controller
                 or offset != transfer["written"] or not body
                 or len(body) > PHOTO_CHUNK_MAX
@@ -793,69 +1007,121 @@ def photo_request(method, path, query, body, headers):
             with open(PHOTO_TEMP, "ab") as output:
                 output.write(body)
             transfer["hash"].update(body)
+            transfer["last_offset"] = offset
+            transfer["last_size"] = len(body)
+            transfer["last_hash"] = sha256(body)
             transfer["written"] += len(body)
+            transfer["last_activity"] = io.ticks
+            if (transfer["written"] // PHOTO_CHUNK_MAX) % 8 == 0:
+                gc.collect()
             return 200, {"offset": transfer["written"]}
         except Exception:
             photo_upload = None
             return 500, {"error": "image write failed"}
     if path == "/api/frame/finish" and method == "POST":
+        requested_digest = ""
+        try:
+            requested_digest = json.loads(body.decode("utf-8")).get("sha256", "")
+        except Exception:
+            pass
         transfer = photo_upload
+        if (transfer is None and photo_last_finish is not None
+                and photo_last_finish["owner"] == controller
+                and photo_last_finish["sha256"] == requested_digest
+                and io.ticks < photo_last_finish["expires"]):
+            return 200, {"displayed": True, "has_photo": True}
         if (transfer is None or transfer["owner"] != controller
-                or transfer["written"] != transfer["size"]):
+                or transfer["written"] != transfer["size"]
+                or (requested_digest
+                    and requested_digest != transfer["sha256"])):
             return 409, {"error": "transfer incomplete"}
         photo_upload = None
         if hexlify(transfer["hash"].digest()) != transfer["sha256"]:
             return 400, {"error": "image checksum mismatch"}
+        if transfer["format"] == "wsa1":
+            return finish_animation(transfer, controller)
         try:
             with open(PHOTO_TEMP, "rb") as source:
                 header = source.read(26)
             if (header[:8] != b"\x89PNG\r\n\x1a\n"
                     or header[12:16] != b"IHDR"
-                    or int.from_bytes(header[16:20], "big") != 160
-                    or int.from_bytes(header[20:24], "big") != 120
+                    or (int.from_bytes(header[16:20], "big"),
+                        int.from_bytes(header[20:24], "big"))
+                    not in ((80, 60), (160, 120))
                     or header[25] not in (2, 3, 6)):
-                return 400, {"error": "expected a 160x120 RGB/RGBA PNG"}
-            previous = photo_filename
-            photo_image = None
-            gc.collect()
+                return 400, {"error": "expected an 80x60 or 160x120 PNG"}
+        except Exception as error:
+            print("Photo header check failed:", error)
+            return 400, {"error": "badge could not read the uploaded PNG"}
+
+        previous = photo_filename
+        previous_path = saved_photo_paths().get(previous)
+        photo_image = None
+        gc.collect()
+        try:
             candidate = Image.load(PHOTO_TEMP)
             if candidate is None:
                 raise ValueError("image decoder returned no image")
-            target = PHOTO_B if previous == "photo-a.png" else PHOTO_A
+        except Exception as error:
+            print("Photo decode failed:", error)
+            try:
+                if previous_path:
+                    open_saved_photo(previous_path)
+            except Exception:
+                photo_image = None
+            error_kind = getattr(type(error), "__name__", "decode error")
+            return 400, {
+                "error": "badge PNG decode failed: " + error_kind + ": " + str(error)[:120],
+            }
+
+        try:
+            target = (PHOTO_B if previous == filename_from_path(PHOTO_A)
+                      else PHOTO_A)
             try:
                 os.remove(target)
             except OSError:
                 pass
             os.rename(PHOTO_TEMP, target)
-            photo_filename = target.rsplit("/", 1)[-1]
+            photo_filename = filename_from_path(target)
             photo_image = candidate
+            photo_animation = None
             State.save("work_status_photo_current", {"file": photo_filename})
             current_status = "photo"
             save_status()
+            photo_last_finish = {
+                "owner": controller,
+                "sha256": transfer["sha256"],
+                "expires": io.ticks + 30000,
+            }
             gc.collect()
             return 200, {"displayed": True, "has_photo": True}
         except Exception as error:
-            print("Photo display failed:", error)
+            print("Photo save failed:", error)
             try:
-                photo_image = Image.load(APP_DIR + "/" + previous) if previous else None
+                if previous_path:
+                    open_saved_photo(previous_path)
             except Exception:
                 photo_image = None
-            return 500, {"error": "badge could not decode or save this PNG"}
+            return 500, {
+                "error": "badge decoded the PNG but could not save it; check free storage",
+            }
     return 404, {"error": "not found"}
 
 
 def load_photo():
-    global photo_image, photo_filename
+    global photo_image, photo_filename, photo_animation
     data = {"file": ""}
     try:
         if State.load("work_status_photo_current", data):
             name = data.get("file", "")
-            if name in ("photo-a.png", "photo-b.png"):
-                photo_image = Image.load(APP_DIR + "/" + name)
+            path = saved_photo_paths().get(name)
+            if path is not None:
+                open_saved_photo(path)
                 photo_filename = name
     except Exception as error:
         print("Could not load saved photo:", error)
         photo_image = None
+        photo_animation = None
         photo_filename = ""
 
 
@@ -922,6 +1188,11 @@ def handle_request(raw_request):
         if auth_key is None:
             return make_response(401, {"error": "authentication failed"})
         code, payload = photo_request(method, path, query_values, body, headers)
+        if code == 200 and path in ("/api/frame", "/api/frame/start", "/api/frame/chunk"):
+            challenge_code, challenge = issue_challenge(headers["x-work-device"])
+            if challenge_code == 200:
+                payload["next_nonce"] = challenge["nonce"]
+                payload["nonce_expires_in"] = challenge["expires_in"]
         return make_response(code, payload, auth_key, headers["x-work-nonce"])
 
     if path != "/api/status":
@@ -1042,8 +1313,9 @@ def service_http():
             print("HTTP accept failed:", error)
             return
 
+    peer_closed = False
     try:
-        chunk = client_socket.recv(512)
+        chunk = client_socket.recv(2048)
         if chunk:
             client_buffer += chunk
             if len(client_buffer) > MAX_REQUEST_BYTES:
@@ -1056,8 +1328,7 @@ def service_http():
                 close_client()
                 return
         elif client_buffer:
-            close_client()
-            return
+            peer_closed = True
     except OSError:
         pass
     except Exception as error:
@@ -1066,13 +1337,20 @@ def service_http():
         return
 
     if request_is_complete(client_buffer):
-        response = handle_request(client_buffer)
+        try:
+            response = handle_request(client_buffer)
+        except Exception as error:
+            print("HTTP request failed:", error)
+            response = make_response(500, {"error": "internal badge server error"})
         try:
             client_socket.setblocking(True)
             client_socket.settimeout(3)
             client_socket.sendall(response)
         except Exception as error:
             print("HTTP response failed:", error)
+        close_client()
+        gc.collect()
+    elif peer_closed:
         close_client()
     elif io.ticks - client_started > CLIENT_TIMEOUT_MS:
         close_client()
@@ -1312,10 +1590,12 @@ def draw_ui():
         draw_address_overlay()
         return
 
+    if current_status == "photo":
+        advance_photo_animation()
     if current_status == "photo" and photo_image is not None:
         screen.brush = BLACK
         screen.clear()
-        screen.blit(photo_image, 0, 0)
+        screen.scale_blit(photo_image, 0, 0, 160, 120)
         return
 
     if current_status == "meeting":
@@ -1465,6 +1745,7 @@ def update():
     global last_b_press, night_sleep_at
 
     expire_security_state()
+    expire_photo_upload()
     if pending_pairing is not None:
         if io.BUTTON_UP in io.pressed:
             approve_pending_pairing()
@@ -1503,7 +1784,11 @@ def update():
     service_wifi()
     service_http()
     draw_ui()
-    if current_status == "sleep":
+    if (client_socket is not None
+            or (photo_upload is not None
+                and io.ticks - photo_upload["last_activity"] < TRANSFER_FAST_WINDOW_MS)):
+        time.sleep_ms(TRANSFER_FRAME_DELAY_MS)
+    elif current_status == "sleep":
         time.sleep_ms(SLEEP_STATUS_FRAME_DELAY_MS)
     else:
         time.sleep_ms(FRAME_DELAY_MS)

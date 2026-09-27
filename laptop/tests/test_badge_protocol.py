@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -72,6 +73,9 @@ class FakeScreen:
     def blit(self, _image, _x, _y):
         pass
 
+    def scale_blit(self, _image, _x, _y, _width, _height):
+        pass
+
 
 fake_io = types.SimpleNamespace(
     ticks=0,
@@ -89,8 +93,15 @@ fake_io = types.SimpleNamespace(
 )
 class FakeImage:
     @staticmethod
-    def load(_path):
-        return types.SimpleNamespace(width=160, height=120)
+    def load(path):
+        from PIL import Image
+
+        with Image.open(path) as image:
+            image.load()
+            return types.SimpleNamespace(
+                width=image.width, height=image.height,
+                pixel=image.convert("RGB").getpixel((0, 0)),
+            )
 
 
 fake_badgeware = types.SimpleNamespace(
@@ -162,10 +173,13 @@ def authenticated_request(method, payload=None):
 class BadgeProtocolTests(unittest.TestCase):
     def setUp(self):
         fake_io.ticks = 0
+        fake_io.pressed = set()
         badge.current_status = "available"
         badge.photo_image = None
+        badge.photo_animation = None
         badge.photo_filename = ""
         badge.photo_upload = None
+        badge.photo_last_finish = None
         badge.current_note = ""
         badge.custom_text = "HELLO"
         badge.custom_symbol = "star"
@@ -336,6 +350,54 @@ class BadgeProtocolTests(unittest.TestCase):
         self.assertIn("UP: APPROVE", fake_badgeware.screen.texts)
         self.assertIn("DOWN: REJECT", fake_badgeware.screen.texts)
 
+    def test_pairing_can_be_rejected_or_expire_without_trusting_device(self):
+        for action in ("reject", "expire"):
+            with self.subTest(action=action):
+                badge.trusted_devices = {}
+                badge.pending_pairing = {"id": DEVICE_ID, "name": "Test", "expires": 100}
+                if action == "reject":
+                    badge.reject_pending_pairing()
+                else:
+                    fake_io.ticks = 100
+                    badge.expire_security_state()
+                self.assertIsNone(badge.pending_pairing)
+                self.assertNotIn(DEVICE_ID, badge.trusted_devices)
+
+    def test_badge_buttons_cycle_status_toggle_address_and_clear_trust(self):
+        with patch.object(badge, "service_wifi"), patch.object(badge, "service_http"), \
+                patch.object(badge, "draw_ui"), patch.object(badge.time, "sleep_ms", create=True):
+            badge.current_status = "photo"
+            badge.current_note = "Old note"
+            fake_io.pressed = {fake_io.BUTTON_A}
+            badge.update()
+            self.assertEqual(badge.current_status, "available")
+            self.assertEqual(badge.current_note, "")
+            badge.show_address_until = 0
+            fake_io.pressed = {fake_io.BUTTON_C}
+            badge.update()
+            self.assertGreater(badge.show_address_until, fake_io.ticks)
+            fake_io.pressed = {fake_io.BUTTON_DOWN}
+            badge.update()
+            self.assertEqual(badge.trusted_devices, {})
+            self.assertEqual(badge.show_address_until, 0)
+
+    def test_abandoned_upload_expires_without_losing_saved_photo(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+            badge, "PHOTO_TEMP", os.path.join(folder, "incoming.png"),
+        ):
+            Path(badge.PHOTO_TEMP).write_bytes(b"partial upload")
+            badge.photo_upload = {"last_activity": 0, "owner": "other-controller"}
+            badge.photo_filename = "saved-photo.png"
+            fake_io.ticks = badge.PHOTO_UPLOAD_TIMEOUT_MS - 1
+            badge.expire_photo_upload()
+            self.assertIsNotNone(badge.photo_upload)
+            fake_io.ticks += 1
+            response = self.photo_command("GET", "/api/frame")
+            self.assertTrue(response.startswith(b"HTTP/1.1 200"))
+            self.assertIsNone(badge.photo_upload)
+            self.assertFalse(Path(badge.PHOTO_TEMP).exists())
+            self.assertEqual(badge.photo_filename, "saved-photo.png")
+
     def test_unknown_route_returns_404(self):
         response = badge.handle_request(
             b"GET /unknown HTTP/1.1\r\nHost: badge\r\n\r\n"
@@ -363,11 +425,12 @@ class BadgeProtocolTests(unittest.TestCase):
                 self.assertIn("75%", fake_badgeware.screen.texts)
 
 
-    def photo_command(self, method, path, body=b"", query=""):
-        challenge = badge.handle_request(request_bytes(
-            "GET", path="/api/challenge?device_id=" + DEVICE_ID,
-        ))
-        nonce = response_json(challenge)["nonce"]
+    def photo_command(self, method, path, body=b"", query="", nonce=None):
+        if nonce is None:
+            challenge = badge.handle_request(request_bytes(
+                "GET", path="/api/challenge?device_id=" + DEVICE_ID,
+            ))
+            nonce = response_json(challenge)["nonce"]
         signature = hmac.new(
             DEVICE_KEY,
             badge.auth_message(method, path, nonce, body),
@@ -388,11 +451,125 @@ class BadgeProtocolTests(unittest.TestCase):
         good = self.photo_command("GET", "/api/frame")
         self.assertTrue(good.startswith(b"HTTP/1.1 200"))
         self.assertFalse(response_json(good)["has_photo"])
+        self.assertIn([80, 60], response_json(good)["png_sizes"])
+        self.assertEqual(response_json(good)["animation_format"], "wsa1")
+
+    def test_photo_response_supplies_signed_single_use_next_challenge(self):
+        _, challenge = badge.issue_challenge(DEVICE_ID)
+        original_nonce = challenge["nonce"]
+        first = self.photo_command("GET", "/api/frame", nonce=original_nonce)
+        body = first.split(b"\r\n\r\n", 1)[1]
+        expected = hmac.new(
+            DEVICE_KEY, badge.response_auth_message(original_nonce, body), hashlib.sha256,
+        ).hexdigest()
+        self.assertIn(("X-Work-Signature: " + expected).encode(), first)
+        nonce = response_json(first)["next_nonce"]
+        self.assertNotEqual(nonce, original_nonce)
+        second = self.photo_command("GET", "/api/frame", nonce=nonce)
+        self.assertTrue(second.startswith(b"HTTP/1.1 200"))
+        replay = self.photo_command("GET", "/api/frame", nonce=nonce)
+        self.assertTrue(replay.startswith(b"HTTP/1.1 401"))
+        next_nonce = response_json(second)["next_nonce"]
+        fake_io.ticks += badge.AUTH_NONCE_TIMEOUT_MS
+        expired = self.photo_command("GET", "/api/frame", nonce=next_nonce)
+        self.assertTrue(expired.startswith(b"HTTP/1.1 401"))
+
+    def test_upload_services_network_without_status_animation_delay(self):
+        with patch.object(badge, "service_wifi"), patch.object(badge, "service_http"), \
+                patch.object(badge, "draw_ui"), patch.object(badge, "client_socket", None), \
+                patch.object(badge.time, "sleep_ms", create=True) as delay:
+            badge.photo_upload = {"last_activity": 0}
+            fake_io.ticks = 500
+            badge.update()
+            delay.assert_called_with(badge.TRANSFER_FRAME_DELAY_MS)
+            fake_io.ticks = badge.TRANSFER_FAST_WINDOW_MS + 1
+            badge.update()
+            delay.assert_called_with(badge.FRAME_DELAY_MS)
+            badge.client_socket = object()
+            badge.update()
+            delay.assert_called_with(badge.TRANSFER_FRAME_DELAY_MS)
+            badge.client_socket = None
+            badge.photo_upload = None
+            badge.current_status = "sleep"
+            badge.update()
+            delay.assert_called_with(badge.SLEEP_STATUS_FRAME_DELAY_MS)
+
+    def upload_animation(self, payload):
+        metadata = json.dumps({
+            "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
+            "format": "wsa1",
+        }).encode()
+        start = self.photo_command("POST", "/api/frame/start", metadata)
+        self.assertTrue(start.startswith(b"HTTP/1.1 200"), start)
+        for offset in range(0, len(payload), badge.PHOTO_CHUNK_MAX):
+            chunk = payload[offset:offset + badge.PHOTO_CHUNK_MAX]
+            response = self.photo_command(
+                "POST", "/api/frame/chunk", chunk, "?offset=" + str(offset))
+            self.assertTrue(response.startswith(b"HTTP/1.1 200"), response)
+        return self.photo_command("POST", "/api/frame/finish", metadata)
+
+    def test_animation_upload_playback_reload_and_failed_replacement(self):
+        from PIL import Image
+        from laptop.photo_tools import encode_badge_animation
+
+        with tempfile.TemporaryDirectory() as folder, patch.multiple(
+            badge, PHOTO_TEMP=os.path.join(folder, "upload.png"),
+            ANIMATION_A=os.path.join(folder, "anim-a"),
+            ANIMATION_B=os.path.join(folder, "anim-b"),
+        ):
+            path = Path(folder) / "moving.gif"
+            Image.new("RGB", (160, 120), "red").save(
+                path, save_all=True, append_images=[Image.new("RGB", (160, 120), "blue")],
+                duration=[100, 250], loop=1,
+            )
+            payload = encode_badge_animation(path)
+            response = self.upload_animation(payload)
+            self.assertTrue(response.startswith(b"HTTP/1.1 200"), response)
+            self.assertEqual(badge.photo_image.pixel, (255, 0, 0))
+            fake_io.ticks = 99
+            badge.draw_ui()
+            self.assertEqual(badge.photo_animation["index"], 0)
+            fake_io.ticks = 100
+            badge.draw_ui()
+            self.assertEqual(badge.photo_image.pixel, (0, 0, 255))
+            fake_io.ticks = 350
+            badge.draw_ui()
+            self.assertEqual(badge.photo_image.pixel, (255, 0, 0))
+            fake_io.ticks = 450
+            badge.draw_ui()
+            fake_io.ticks = 700
+            badge.draw_ui()
+            self.assertEqual(badge.photo_image.pixel, (0, 0, 255))
+            self.assertEqual(badge.photo_animation["remaining"], 0)
+            badge.photo_image = None
+            badge.photo_animation = None
+            badge.load_photo()
+            self.assertEqual(badge.photo_image.pixel, (255, 0, 0))
+            previous = badge.photo_filename
+            response = self.upload_animation(payload[:-12])
+            self.assertTrue(response.startswith(b"HTTP/1.1 400"), response)
+            self.assertEqual(badge.photo_filename, previous)
+            self.assertEqual(badge.photo_image.pixel, (255, 0, 0))
+            self.assertEqual(badge.photo_status()["frame_count"], 2)
+            badge.photo_animation["remaining"] = -1
+            fake_io.ticks = badge.photo_animation["due"]
+            badge.draw_ui()
+            fake_io.ticks = badge.photo_animation["due"]
+            badge.draw_ui()
+            self.assertEqual(badge.photo_animation["index"], 0)
+            self.assertEqual(badge.photo_animation["remaining"], -1)
+
+    def test_default_photo_storage_is_outside_read_only_system_apps(self):
+        self.assertFalse(badge.PHOTO_TEMP.startswith(badge.APP_DIR + "/"))
+        self.assertFalse(badge.PHOTO_A.startswith(badge.APP_DIR + "/"))
+        self.assertFalse(badge.PHOTO_B.startswith(badge.APP_DIR + "/"))
+        self.assertTrue(badge.PHOTO_TEMP.startswith("/"))
 
     def test_authenticated_photo_upload_switches_back_to_status(self):
-        png = (b"\x89PNG\r\n\x1a\n" + b"\x00" * 4 +
-               b"IHDR" + (160).to_bytes(4, "big") +
-               (120).to_bytes(4, "big") + b"\x08\x03")
+        from PIL import Image
+        from laptop.photo_tools import encode_badge_png
+
+        png = encode_badge_png(Image.new("RGB", (160, 120), (25, 120, 200)))
         with tempfile.TemporaryDirectory() as folder:
             old_paths = (badge.PHOTO_TEMP, badge.PHOTO_A, badge.PHOTO_B)
             try:
@@ -406,15 +583,19 @@ class BadgeProtocolTests(unittest.TestCase):
                 start = self.photo_command(
                     "POST", "/api/frame/start", metadata)
                 self.assertTrue(start.startswith(b"HTTP/1.1 200"))
-                chunk = self.photo_command(
-                    "POST", "/api/frame/chunk", png, "?offset=0")
-                self.assertEqual(response_json(chunk)["offset"], len(png))
+                self.assertEqual(response_json(start)["chunk_bytes"], badge.PHOTO_CHUNK_MAX)
+                for offset in range(0, len(png), badge.PHOTO_CHUNK_MAX):
+                    body = png[offset:offset + badge.PHOTO_CHUNK_MAX]
+                    chunk = self.photo_command(
+                        "POST", "/api/frame/chunk", body, "?offset=" + str(offset))
+                    self.assertEqual(response_json(chunk)["offset"], offset + len(body))
                 finish = self.photo_command(
                     "POST", "/api/frame/finish", b"{}")
                 self.assertTrue(finish.startswith(b"HTTP/1.1 200"))
                 self.assertEqual(badge.current_status, "photo")
                 self.assertTrue(os.path.exists(badge.PHOTO_A))
                 self.assertTrue(badge.status_payload()["photo"])
+                self.assertIsNone(badge.photo_animation)
                 badge.draw_ui()
                 response = badge.handle_request(authenticated_request(
                     "POST", {"status": "focus", "note": ""}))
@@ -438,6 +619,31 @@ class BadgeProtocolTests(unittest.TestCase):
                     "POST", "/api/frame/finish", b"{}"
                 ).startswith(b"HTTP/1.1 400"))
                 self.assertEqual(badge.current_status, "available")
+            finally:
+                badge.PHOTO_TEMP = old
+
+    def test_repeated_photo_chunk_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as folder:
+            old = badge.PHOTO_TEMP
+            badge.PHOTO_TEMP = os.path.join(folder, "incoming.png")
+            try:
+                body = b"x" * 24
+                metadata = json.dumps({
+                    "size": 48,
+                    "sha256": hashlib.sha256(body * 2).hexdigest(),
+                }).encode()
+                self.assertTrue(self.photo_command(
+                    "POST", "/api/frame/start", metadata,
+                ).startswith(b"HTTP/1.1 200"))
+                first = self.photo_command(
+                    "POST", "/api/frame/chunk", body, "?offset=0",
+                )
+                repeated = self.photo_command(
+                    "POST", "/api/frame/chunk", body, "?offset=0",
+                )
+                self.assertEqual(response_json(first)["offset"], 24)
+                self.assertEqual(response_json(repeated)["offset"], 24)
+                self.assertEqual(os.path.getsize(badge.PHOTO_TEMP), 24)
             finally:
                 badge.PHOTO_TEMP = old
 

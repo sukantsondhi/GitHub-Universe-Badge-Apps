@@ -1,6 +1,5 @@
-# Update with your 2.4Ghz WiFi details
-# The default SSID will connect you to
-# the network at the Hack The Badge space.
+# Copy to the badge-drive root as secrets.py and fill in your 2.4 GHz Wi-Fi.
+# Keep the real file private. Work Status does not need a GitHub API token.
 WIFI_SSID = ""
 WIFI_PASSWORD = ""
 

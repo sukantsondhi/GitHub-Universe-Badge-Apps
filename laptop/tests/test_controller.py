@@ -139,6 +139,73 @@ class ControllerTests(unittest.TestCase):
             TEST_DEVICE_KEY,
         )
 
+    def test_low_memory_photo_checks_badge_support_before_uploading(self):
+        from unittest.mock import patch
+        from PIL import Image
+        import photo_tools
+
+        payload = photo_tools.encode_badge_png(Image.new("RGB", (160, 120)))
+        client = self.badge_client()
+        with patch.object(client, "_photo_request", return_value={}) as send:
+            with self.assertRaisesRegex(RuntimeError, "Update the Work Status app on the badge"):
+                client.send_photo(payload)
+            send.assert_called_once_with("/api/frame", "GET", b"")
+
+    def test_animation_rejects_old_badge_without_sending_frames(self):
+        from unittest.mock import patch
+
+        client = self.badge_client()
+        with patch.object(client, "_photo_request", return_value={}) as send:
+            with self.assertRaisesRegex(RuntimeError, "animated GIFs"):
+                client.send_animation(b"WSA1" + b"x" * 100)
+            send.assert_called_once_with("/api/frame", "GET", b"")
+
+    def test_animation_upload_uses_signed_chunks_and_longer_decode_timeout(self):
+        from unittest.mock import patch
+
+        client = self.badge_client()
+        requests = []
+        progress = []
+        payload = b"WSA1" + b"x" * 4000
+
+        def send(path, method, body=b"", query="", **kwargs):
+            requests.append((path, method, body, kwargs))
+            if path == "/api/frame":
+                return {"animation_format": "wsa1", "max_animation_bytes": 524288}
+            if path == "/api/frame/chunk":
+                return {"offset": int(query.split("=")[1]) + len(body)}
+            return {"displayed": True}
+
+        with patch.object(client, "_photo_request", side_effect=send), patch.object(
+            client, "get_status", return_value={"status": "photo"},
+        ):
+            self.assertEqual(client.send_animation(payload, progress.append), {"status": "photo"})
+        self.assertEqual(json.loads(requests[1][2])["format"], "wsa1")
+        self.assertEqual(b"".join(body for path, _, body, _ in requests
+                                  if path == "/api/frame/chunk"), payload)
+        self.assertEqual(requests[-1][3]["timeout"], 120.0)
+        self.assertEqual(progress[-1], 100)
+
+    def test_low_memory_photo_uploads_when_badge_advertises_support(self):
+        from unittest.mock import patch
+        from PIL import Image
+        import photo_tools
+
+        payload = photo_tools.encode_badge_png(Image.new("RGB", (160, 120)))
+        client = self.badge_client()
+
+        def send(path, _method, body=b"", query="", **_kwargs):
+            if path == "/api/frame":
+                return {"png_sizes": [[80, 60], [160, 120]]}
+            if path == "/api/frame/chunk":
+                return {"offset": int(query.split("=")[1]) + len(body)}
+            return {"displayed": True}
+
+        with patch.object(client, "_photo_request", side_effect=send), patch.object(
+            client, "get_status", return_value={"status": "photo"},
+        ):
+            self.assertEqual(client.send_photo(payload), {"status": "photo"})
+
     def test_photo_upload_uses_signed_chunks_and_waits_for_display_confirmation(self):
         from unittest.mock import patch
         client = self.badge_client()
@@ -171,6 +238,131 @@ class ControllerTests(unittest.TestCase):
     def test_photo_upload_rejects_invalid_payload(self):
         with self.assertRaises(ValueError):
             self.badge_client().send_photo(b"not a png" * 100)
+
+    def test_photo_reuses_signed_next_challenge_without_extra_round_trip(self):
+        from unittest.mock import patch
+
+        client = self.badge_client()
+        with patch.object(client, "_send", side_effect=[
+            {"nonce": "a" * 32},
+            {"next_nonce": "b" * 32, "nonce_expires_in": 10},
+            {"offset": 1},
+        ]) as send:
+            client._photo_request("/api/frame", "GET", b"")
+            client._photo_request("/api/frame/chunk", "POST", b"x", query="?offset=0")
+        self.assertEqual(send.call_count, 3)
+        self.assertEqual(send.call_args_list[-1].kwargs["response_nonce"], "b" * 32)
+        self.assertEqual(client._photo_nonce, "")
+
+    def test_photo_refreshes_cached_challenge_after_expiry(self):
+        from unittest.mock import patch
+
+        client = self.badge_client()
+        with patch.object(client, "_send", side_effect=[
+            {"nonce": "a" * 32},
+            {"next_nonce": "b" * 32, "nonce_expires_in": 10},
+            {"nonce": "c" * 32}, {"offset": 1},
+        ]) as send:
+            with patch.object(controller.time, "monotonic", return_value=100):
+                client._photo_request("/api/frame", "GET", b"")
+            with patch.object(controller.time, "monotonic", return_value=110):
+                client._photo_request("/api/frame/chunk", "POST", b"x", query="?offset=0")
+        self.assertEqual(send.call_count, 4)
+        self.assertEqual(send.call_args_list[-1].kwargs["response_nonce"], "c" * 32)
+
+    def test_photo_retry_refreshes_challenge_after_dropped_response(self):
+        from unittest.mock import patch
+
+        client = self.badge_client()
+        with patch.object(client, "_send", side_effect=[
+            {"nonce": "a" * 32},
+            {"next_nonce": "b" * 32, "nonce_expires_in": 10},
+            controller.error.URLError("lost response"),
+            {"nonce": "c" * 32}, {"offset": 1},
+        ]) as send, patch.object(controller.time, "sleep"):
+            client._photo_request("/api/frame", "GET", b"")
+            self.assertEqual(client._photo_request(
+                "/api/frame/chunk", "POST", b"x", query="?offset=0"), {"offset": 1})
+        self.assertEqual(send.call_args_list[2].kwargs["response_nonce"], "b" * 32)
+        self.assertEqual(send.call_args_list[4].kwargs["response_nonce"], "c" * 32)
+
+    def test_photo_does_not_cache_challenge_from_unverified_response(self):
+        from unittest.mock import patch
+
+        client = self.badge_client()
+        with patch.object(client, "_send", side_effect=[
+            {"nonce": "a" * 32}, AuthenticationFailed("invalid response signature"),
+        ]):
+            with self.assertRaises(AuthenticationFailed):
+                client._photo_request("/api/frame", "GET", b"")
+        self.assertEqual(client._photo_nonce, "")
+
+    def test_upload_uses_negotiated_chunk_size_and_legacy_fallback(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        payload = b"\x89PNG\r\n\x1a\n" + b"x" * 3992
+
+        def send(reply, chunks, path, _method, body=b"", query="", **_kwargs):
+            if path == "/api/frame/start":
+                return reply
+            if path == "/api/frame/chunk":
+                chunks.append(body)
+                return {"offset": int(query.split("=")[1]) + len(body)}
+            return {"displayed": True}
+
+        for reply, expected in (({"chunk_bytes": 1536}, 3), ({}, 6)):
+            with self.subTest(reply=reply):
+                chunks = []
+                client = self.badge_client()
+
+                with patch.object(client, "_photo_request", side_effect=partial(send, reply, chunks)), patch.object(
+                    client, "get_status", return_value={"status": "photo"},
+                ):
+                    client.send_photo(payload)
+                self.assertEqual(len(chunks), expected)
+                self.assertEqual(b"".join(chunks), payload)
+
+    def test_upload_rejects_invalid_advertised_chunk_sizes(self):
+        from unittest.mock import patch
+
+        for chunk_bytes in (0, -1, True, "1536", 4096):
+            with self.subTest(chunk_bytes=chunk_bytes):
+                client = self.badge_client()
+                with patch.object(client, "_photo_request", return_value={"chunk_bytes": chunk_bytes}) as send:
+                    with self.assertRaisesRegex(RuntimeError, "invalid photo chunk size"):
+                        client.send_photo(b"\x89PNG\r\n\x1a\n" + b"x" * 100)
+                    self.assertEqual(send.call_count, 1)
+
+    def test_photo_upload_retries_a_dropped_chunk_connection(self):
+        from unittest.mock import patch
+
+        client = self.badge_client()
+        payload = b"\x89PNG\r\n\x1a\n" + b"x" * 900
+        dropped = False
+        chunk_attempts = 0
+
+        def signed(path, method, body=b"", query="",
+                   content_type="application/json", timeout=2.5):
+            nonlocal dropped, chunk_attempts
+            if path == "/api/frame/chunk":
+                chunk_attempts += 1
+                if not dropped:
+                    dropped = True
+                    raise controller.error.URLError("connection dropped")
+                offset = int(query.split("=")[1])
+                return {"offset": offset + len(body)}
+            if path == "/api/frame/finish":
+                return {"displayed": True}
+            if path == "/api/status":
+                return {"status": "photo", "photo": True}
+            return {"offset": 0}
+
+        with patch.object(client, "_signed_request", side_effect=signed), \
+                patch.object(controller.time, "sleep"):
+            result = client.send_photo(payload)
+        self.assertEqual(result["status"], "photo")
+        self.assertGreaterEqual(chunk_attempts, 3)
 
     def test_address_defaults_to_port_8080(self):
         self.assertEqual(
